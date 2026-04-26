@@ -1,9 +1,29 @@
+# OS
 .DS_Store
+
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Environment variables
 .env
 .env.local
 .env*.local
+
+# Logs
 *.log
+npm-debug.log*
+
+# Local database
+*.db
+*.db-shm
+*.db-wal
+
+# Editor / tooling
 .claude/settings.local.json
 .playwright-mcp/
+
+# Worktrees
+worktrees/
