@@ -1,3 +1,26 @@
+.app-layout {
+  padding: 2rem;
+  font-family: sans-serif;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.app-title {
+  margin: 0 0 1.5rem;
+}
+
+.app-columns {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+@media (max-width: 700px) {
+  .app-columns {
+    flex-direction: column;
+  }
+}
+
 .counter {
   font-size: 16px;
   padding: 5px 10px;

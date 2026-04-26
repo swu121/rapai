@@ -1,10 +1,15 @@
 import { MicController } from './components/MicController'
+import { WordGenerator } from './components/WordGenerator'
+import './App.css'
 
 function App() {
   return (
-    <div style={{ padding: '2rem', fontFamily: 'sans-serif' }}>
-      <h1>Rap AI</h1>
-      <MicController />
+    <div className="app-layout">
+      <h1 className="app-title">Rap AI</h1>
+      <div className="app-columns">
+        <WordGenerator />
+        <MicController />
+      </div>
     </div>
   )
 }

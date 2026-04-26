@@ -2,7 +2,7 @@ class RapProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this._buf = [];
-    this._chunkSamples = 1600; // 100ms @ 16kHz
+    this._chunkSamples = 2400; // 100ms @ 24kHz
   }
 
   process(inputs) {
