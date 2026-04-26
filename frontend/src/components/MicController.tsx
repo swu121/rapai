@@ -1,6 +1,14 @@
 import { useState, useRef } from "react";
+import { DeepgramClient } from "@deepgram/sdk";
 
 type MicState = "idle" | "granted" | "denied" | "error";
+type DeepgramSocket = Awaited<
+  ReturnType<DeepgramClient["listen"]["v1"]["connect"]>
+>;
+type TranscriptResult = {
+  channel?: { alternatives?: { transcript?: string }[] };
+  is_final?: boolean;
+};
 
 type Props = {
   onSessionSaved: () => void
@@ -15,79 +23,55 @@ export function MicController({ onSessionSaved }: Props) {
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const currentItemIdRef = useRef<string | null>(null);
+  const socketRef = useRef<DeepgramSocket | null>(null);
   const startedAtRef = useRef<string | null>(null);
 
   async function startAudioPipeline(stream: MediaStream) {
-    const ws = new WebSocket(
-      "wss://api.openai.com/v1/realtime?intent=transcription",
-      [
-        "realtime",
-        `openai-insecure-api-key.${import.meta.env.VITE_OPENAI_API_KEY}`,
-        "openai-beta.realtime-v1",
-      ]
-    );
+    const deepgram = new DeepgramClient({
+      apiKey: import.meta.env.VITE_DEEPGRAM_API_KEY,
+    });
 
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          type: "transcription_session.update",
-          session: {
-            input_audio_format: "pcm16",
-            input_audio_transcription: { model: "whisper-1" },
-            turn_detection: { type: "server_vad" },
-          },
-        })
-      );
-    };
+    const socket = await deepgram.listen.v1.connect({
+      model: "nova-3",
+      language: "en",
+      encoding: "linear16",
+      sample_rate: 16000,
+      interim_results: "true",
+      smart_format: "false",
+      Authorization: `Token ${import.meta.env.VITE_DEEPGRAM_API_KEY}`,
+    });
 
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data as string) as {
-        type: string;
-        item_id?: string;
-        delta?: string;
-        transcript?: string;
-      };
-
-      if (msg.type === "conversation.item.input_audio_transcription.delta") {
-        if (msg.item_id !== currentItemIdRef.current) {
-          currentItemIdRef.current = msg.item_id ?? null;
-          setInterimTranscript(msg.delta ?? "");
-        } else {
-          setInterimTranscript((prev) => prev + (msg.delta ?? ""));
-        }
-      } else if (msg.type === "conversation.item.input_audio_transcription.completed") {
-        const text = msg.transcript ?? "";
-        if (text) {
-          setFinalTranscript((prev) => (prev ? prev + " " + text : text));
-        }
+    socket.on("message", (data) => {
+      if (data.type !== "Results") return;
+      const result = data as unknown as TranscriptResult;
+      const text = result.channel?.alternatives?.[0]?.transcript;
+      if (!text) return;
+      if (result.is_final) {
+        setFinalTranscript((prev) => (prev ? prev + " " + text : text));
         setInterimTranscript("");
-        currentItemIdRef.current = null;
-      } else if (msg.type === "error") {
-        console.error("OpenAI Realtime error:", msg);
+      } else {
+        setInterimTranscript(text);
       }
-    };
+    });
 
-    ws.onclose = () => console.log("OpenAI Whisper disconnected");
-    ws.onerror = (err) => console.error("OpenAI Realtime WS error:", err);
+    socket.on("close", () => console.log("Deepgram disconnected"));
+    socket.on("error", (err: Error) => console.error("Deepgram error:", err));
 
-    wsRef.current = ws;
+    socket.connect();
+    await socket.waitForOpen();
+    console.log("Deepgram connected");
 
-    const audioContext = new AudioContext({ sampleRate: 24000 });
+    socketRef.current = socket;
+
+    const audioContext = new AudioContext({ sampleRate: 16000 });
     await audioContext.audioWorklet.addModule("/audio-processor.worklet.js");
 
     const source = audioContext.createMediaStreamSource(stream);
     const workletNode = new AudioWorkletNode(audioContext, "rap-processor");
 
     workletNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: arrayBufferToBase64(float32ToPcm16(e.data)),
-          })
-        );
+      if (socketRef.current) {
+        socketRef.current.sendMedia(float32ToPcm16(e.data));
       }
     };
 
@@ -104,15 +88,6 @@ export function MicController({ onSessionSaved }: Props) {
       view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     }
     return buf;
-  }
-
-  function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
   }
 
   async function requestMic() {
@@ -134,11 +109,10 @@ export function MicController({ onSessionSaved }: Props) {
   async function stopMic() {
     workletNodeRef.current?.disconnect();
     audioContextRef.current?.close();
-    wsRef.current?.close();
+    socketRef.current?.close();
     workletNodeRef.current = null;
     audioContextRef.current = null;
-    wsRef.current = null;
-    currentItemIdRef.current = null;
+    socketRef.current = null;
 
     const endedAt = new Date().toISOString();
     const transcript = finalTranscript.trim();

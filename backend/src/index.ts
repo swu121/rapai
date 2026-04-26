@@ -26,7 +26,7 @@ interface SessionParams {
 }
 
 const app = Fastify({ logger: true })
-await app.register(cors, { origin: 'http://localhost:5173' })
+await app.register(cors, { origin: /^http:\/\/localhost:\d+$/ })
 
 app.get('/health', async () => ({ status: 'ok' }))
 
