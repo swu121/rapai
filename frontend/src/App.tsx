@@ -45,6 +45,7 @@ function App() {
         selectedId={selectedId}
         onSelect={handleSelect}
         onDelete={deleteSession}
+        onHome={() => setSelectedId(null)}
       />
       <main className="app-main">
         {selectedSession ? (

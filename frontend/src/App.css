@@ -25,6 +25,15 @@
   flex-shrink: 0;
 }
 
+.sidebar-logo {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sidebar-logo:hover {
+  color: var(--accent);
+}
+
 .sidebar-sessions {
   flex: 1;
   overflow-y: auto;

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { randomWord } from '../data/hipHopWords'
+import { getRhymes } from '../data/datamuse'
+import { RhymePanel } from './RhymePanel'
 import './WordGenerator.css'
 
 const INTERVALS = [5, 10, 15] as const
@@ -10,9 +12,24 @@ export function WordGenerator() {
   const [isRunning, setIsRunning] = useState(true)
   const [currentWord, setCurrentWord] = useState(() => randomWord())
   const [visible, setVisible] = useState(true)
+  const [isFetching, setIsFetching] = useState(false)
+  const [rhymes, setRhymes] = useState<string[]>([])
 
   const currentWordRef = useRef(currentWord)
   currentWordRef.current = currentWord
+
+  useEffect(() => {
+    let cancelled = false
+    setIsFetching(true)
+    setRhymes([])
+    getRhymes(currentWord).then(results => {
+      if (!cancelled) {
+        setRhymes(results)
+        setIsFetching(false)
+      }
+    })
+    return () => { cancelled = true }
+  }, [currentWord])
 
   useEffect(() => {
     if (!isRunning) return
@@ -56,6 +73,8 @@ export function WordGenerator() {
   }
 
   return (
+    <>
+    <RhymePanel baseWord={currentWord} rhymes={rhymes} loading={isFetching} />
     <div className="word-generator">
       <p className="wg-label">Word Prompt</p>
 
@@ -88,5 +107,6 @@ export function WordGenerator() {
         ))}
       </div>
     </div>
+    </>
   )
 }

@@ -1,0 +1,45 @@
+.rhyme-panel {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.25rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  min-width: 140px;
+  backdrop-filter: blur(8px);
+}
+
+.rhyme-panel__label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 0 0 0.75rem;
+}
+
+.rhyme-panel__label span {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.rhyme-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rhyme-panel__word {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+.rhyme-panel__loading {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 1rem;
+  margin: 0;
+}
