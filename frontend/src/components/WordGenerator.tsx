@@ -7,7 +7,7 @@ const INTERVALS = [5, 10, 15] as const
 export function WordGenerator() {
   const [intervalSecs, setIntervalSecs] = useState<number>(10)
   const [secondsLeft, setSecondsLeft] = useState<number>(10)
-  const [isRunning, setIsRunning] = useState(false)
+  const [isRunning, setIsRunning] = useState(true)
   const [currentWord, setCurrentWord] = useState(() => randomWord())
   const [visible, setVisible] = useState(true)
 
@@ -45,6 +45,11 @@ export function WordGenerator() {
     setIsRunning(r => !r)
   }
 
+  function handleSkip() {
+    setSecondsLeft(intervalSecs)
+    advanceWord()
+  }
+
   function handleIntervalChange(secs: number) {
     setIntervalSecs(secs)
     setSecondsLeft(secs)
@@ -62,9 +67,14 @@ export function WordGenerator() {
         {isRunning ? `Next word in: ${secondsLeft}s` : 'Paused'}
       </p>
 
-      <button className="wg-toggle" onClick={handleToggle}>
-        {isRunning ? '⏸ Pause' : '▶ Start'}
-      </button>
+      <div className="wg-controls">
+        <button className="wg-toggle" onClick={handleToggle}>
+          {isRunning ? '⏸ Pause' : '▶ Start'}
+        </button>
+        <button className="wg-skip" onClick={handleSkip}>
+          Skip →
+        </button>
+      </div>
 
       <div className="wg-intervals">
         {INTERVALS.map(s => (

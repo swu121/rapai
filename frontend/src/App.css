@@ -101,13 +101,16 @@
   flex: 1;
   padding: 2rem;
   overflow-y: auto;
-  text-align: left;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .app-columns {
   display: flex;
-  gap: 2rem;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 1.5rem;
+  align-items: center;
 }
 
 @media (max-width: 700px) {

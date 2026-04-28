@@ -48,6 +48,11 @@
   min-height: 1.2em;
 }
 
+.wg-controls {
+  display: flex;
+  gap: 8px;
+}
+
 .wg-toggle {
   padding: 8px 28px;
   border-radius: 8px;
@@ -62,6 +67,22 @@
 
 .wg-toggle:hover {
   opacity: 0.85;
+}
+
+.wg-skip {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.wg-skip:hover {
+  background: var(--border);
 }
 
 .wg-intervals {
