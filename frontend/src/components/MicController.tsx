@@ -1,5 +1,6 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { DeepgramClient } from "@deepgram/sdk";
+import { MicSettings } from "./MicSettings";
 
 type MicState = "idle" | "granted" | "denied" | "error";
 type DeepgramSocket = Awaited<
@@ -22,6 +23,8 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
   const [micState, setMicState] = useState<MicState>("idle");
   const [finalTranscript, setFinalTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
@@ -29,6 +32,25 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
   const startedAtRef = useRef<string | null>(null);
   const streamStartedAtRef = useRef<number | null>(null);
   const transcriptWordsRef = useRef<Array<{ word: string; start: number; end: number }>>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number>(0);
+  const volumeBarRef = useRef<HTMLDivElement>(null);
+
+  async function enumerateDevices() {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    const inputs = all.filter(d => d.kind === "audioinput");
+    setDevices(inputs);
+    setSelectedDeviceId(prev => prev || inputs[0]?.deviceId || "");
+  }
+
+  useEffect(() => {
+    enumerateDevices();
+    navigator.mediaDevices.addEventListener("devicechange", enumerateDevices);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", enumerateDevices);
+  }, []);
 
   async function startAudioPipeline(stream: MediaStream) {
     const deepgram = new DeepgramClient({
@@ -73,7 +95,6 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
     socket.connect();
     await socket.waitForOpen();
     streamStartedAtRef.current = Date.now();
-    console.log("Deepgram connected");
 
     socketRef.current = socket;
 
@@ -89,9 +110,37 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
       }
     };
 
+    // Volume meter
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    analyserRef.current = analyser;
+
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    let smoothed = 0;
+    function pollVolume() {
+      analyser.getByteTimeDomainData(dataArray);
+      let sum = 0;
+      for (const v of dataArray) { const n = (v - 128) / 128; sum += n * n; }
+      const rms = Math.sqrt(sum / dataArray.length);
+      smoothed = smoothed * 0.85 + rms * 0.15;
+      if (volumeBarRef.current) {
+        volumeBarRef.current.style.width = `${Math.min(100, smoothed * 600)}%`;
+      }
+      animFrameRef.current = requestAnimationFrame(pollVolume);
+    }
+    pollVolume();
+
     source.connect(workletNode);
     audioContextRef.current = audioContext;
     workletNodeRef.current = workletNode;
+
+    const mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data);
+    };
+    mediaRecorder.start();
+    mediaRecorderRef.current = mediaRecorder;
   }
 
   function float32ToPcm16(float32: Float32Array): ArrayBuffer {
@@ -106,8 +155,14 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
 
   async function requestMic() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const audioConstraint = selectedDeviceId
+        ? { deviceId: { exact: selectedDeviceId } }
+        : true;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint, video: false });
+      streamRef.current = stream;
       startedAtRef.current = new Date().toISOString();
+      // Re-enumerate now that permission is granted — labels become available
+      await enumerateDevices();
       await startAudioPipeline(stream);
       setMicState("granted");
     } catch (err) {
@@ -121,12 +176,30 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
   }
 
   async function stopMic() {
+    cancelAnimationFrame(animFrameRef.current);
+    if (volumeBarRef.current) volumeBarRef.current.style.width = "0%";
+    analyserRef.current = null;
+
+    const audioBlob = await new Promise<Blob | null>((resolve) => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder || recorder.state === "inactive") { resolve(null); return; }
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        audioChunksRef.current = [];
+        resolve(blob);
+      };
+      recorder.stop();
+    });
+    mediaRecorderRef.current = null;
+
     workletNodeRef.current?.disconnect();
     audioContextRef.current?.close();
     socketRef.current?.close();
+    streamRef.current?.getTracks().forEach(t => t.stop());
     workletNodeRef.current = null;
     audioContextRef.current = null;
     socketRef.current = null;
+    streamRef.current = null;
 
     const endedAt = new Date().toISOString();
     const transcript = finalTranscript.trim();
@@ -137,9 +210,9 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
 
     if (transcript && startedAtRef.current) {
       try {
-        await fetch(`${API}/sessions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const res = await fetch(`${API}/sessions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             transcript,
             started_at: startedAtRef.current,
@@ -147,10 +220,22 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
             transcript_words: transcriptWordsRef.current,
             suggested_words: suggestedWords,
           }),
-        })
-        onSessionSaved()
+        });
+        const sessionData = await res.json();
+
+        if (audioBlob && sessionData.id) {
+          try {
+            const form = new FormData();
+            form.append("audio", audioBlob, "recording.webm");
+            await fetch(`${API}/sessions/${sessionData.id}/audio`, { method: "POST", body: form });
+          } catch (err) {
+            console.error("Failed to upload audio:", err);
+          }
+        }
+
+        onSessionSaved();
       } catch (err) {
-        console.error("Failed to save session:", err)
+        console.error("Failed to save session:", err);
       }
     }
 
@@ -159,21 +244,31 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
     transcriptWordsRef.current = [];
   }
 
+  const activeDevice = devices.find(d => d.deviceId === selectedDeviceId);
+  const deviceLabel = activeDevice?.label || "Default microphone";
+
   return (
-    <div>
-      {micState === "idle" && (
-        <button onClick={requestMic}>Start Recording</button>
+    <div className="mic-controller">
+      {(micState === "idle" || micState === "granted") && (
+        <MicSettings
+          micState={micState}
+          devices={devices}
+          selectedDeviceId={selectedDeviceId}
+          deviceLabel={deviceLabel}
+          volumeBarRef={volumeBarRef}
+          onDeviceChange={setSelectedDeviceId}
+          onStart={requestMic}
+          onStop={stopMic}
+        />
       )}
+
       {micState === "granted" && (
-        <>
-          <p>Recording...</p>
-          <button onClick={stopMic}>Stop Recording</button>
-          <p style={{ marginTop: "1rem", fontSize: "1.2rem" }}>
-            {finalTranscript}{" "}
-            <span style={{ opacity: 0.5 }}>{interimTranscript}</span>
-          </p>
-        </>
+        <div className="mic-transcript">
+          {finalTranscript}{" "}
+          <span className="mic-transcript-interim">{interimTranscript}</span>
+        </div>
       )}
+
       {micState === "denied" && (
         <p style={{ color: "red" }}>
           Microphone permission denied. Allow it in your browser settings and try again.

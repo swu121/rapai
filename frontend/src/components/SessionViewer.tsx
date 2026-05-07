@@ -82,6 +82,12 @@ function duration(start: string, end: string) {
   return `${Math.floor(secs / 60)}m ${secs % 60}s`
 }
 
+function formatAudioTime(secs: number) {
+  const m = Math.floor(secs / 60)
+  const s = Math.floor(secs % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
 export function SessionViewer({ session, onTitleChange }: Props) {
   const [localWords, setLocalWords] = useState<TimedWord[]>(
     () => session.transcript_words ? JSON.parse(session.transcript_words) : []
@@ -102,6 +108,11 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   const [draftTitle, setDraftTitle] = useState(session.title)
   const titleInputRef = useRef<HTMLInputElement>(null)
 
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [audioDuration, setAudioDuration] = useState(0)
+
   useEffect(() => {
     setLocalWords(session.transcript_words ? JSON.parse(session.transcript_words) : [])
     setEditingIdx(null)
@@ -109,6 +120,9 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     setDraftTitle(session.title)
     setEditingTitle(false)
     setIsProcessing(session.associations_status === 'pending')
+    setIsPlaying(false)
+    setCurrentTime(0)
+    setAudioDuration(0)
   }, [session.id])
 
   useEffect(() => {
@@ -404,6 +418,43 @@ export function SessionViewer({ session, onTitleChange }: Props) {
       <div className="session-meta">
         {formatDate(session.started_at)} &nbsp;·&nbsp; {duration(session.started_at, session.ended_at)}
       </div>
+
+      {session.audio_url && (
+        <div className="audio-player">
+          <audio
+            ref={audioRef}
+            src={`${API}${session.audio_url}`}
+            onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
+            onLoadedMetadata={() => setAudioDuration(audioRef.current?.duration ?? 0)}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onEnded={() => { setIsPlaying(false); setCurrentTime(0) }}
+          />
+          <button
+            className="audio-player-btn"
+            onClick={() => isPlaying ? audioRef.current?.pause() : audioRef.current?.play()}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? '⏸' : '▶'}
+          </button>
+          <input
+            className="audio-player-scrubber"
+            type="range"
+            min={0}
+            max={audioDuration || 1}
+            step={0.01}
+            value={currentTime}
+            onChange={(e) => {
+              const t = parseFloat(e.target.value)
+              setCurrentTime(t)
+              if (audioRef.current) audioRef.current.currentTime = t
+            }}
+          />
+          <span className="audio-player-time">
+            {formatAudioTime(currentTime)} / {formatAudioTime(audioDuration)}
+          </span>
+        </div>
+      )}
 
       {isProcessing && (
         <div className="associations-processing">

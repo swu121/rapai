@@ -27,3 +27,6 @@ npm-debug.log*
 
 # Worktrees
 worktrees/
+
+# Audio recordings
+backend/uploads/

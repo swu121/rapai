@@ -1,7 +1,18 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
+import multipart from '@fastify/multipart'
+import staticPlugin from '@fastify/static'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
+import { mkdirSync, createWriteStream } from 'fs'
+import { join } from 'path'
+import { pipeline } from 'stream/promises'
+import { fileURLToPath } from 'url'
+import { dirname } from 'path'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const UPLOADS_DIR = join(__dirname, '../../uploads')
+mkdirSync(UPLOADS_DIR, { recursive: true })
 
 const db = new Database('./sessions.db')
 
@@ -27,6 +38,8 @@ for (const stmt of [
 try {
   db.exec("ALTER TABLE sessions ADD COLUMN associations_status TEXT NOT NULL DEFAULT 'pending'")
 } catch { /* column already exists */ }
+
+try { db.exec('ALTER TABLE sessions ADD COLUMN audio_url TEXT') } catch { /* column already exists */ }
 
 // Any sessions still 'pending' on startup had their jobs killed by a restart — mark them done
 db.exec("UPDATE sessions SET associations_status = 'done' WHERE associations_status = 'pending'")
@@ -135,6 +148,8 @@ async function runAssociationJob(
 
 const app = Fastify({ logger: true })
 await app.register(cors, { origin: /^http:\/\/localhost:\d+$/ })
+await app.register(multipart)
+await app.register(staticPlugin, { root: UPLOADS_DIR, prefix: '/uploads/' })
 
 app.get('/health', async () => ({ status: 'ok' }))
 
@@ -363,6 +378,26 @@ app.get<{ Params: { id: string } }>('/sessions/:id/associations', async (request
   `).all(...unique)
 
   return rows
+})
+
+app.post<{ Params: SessionParams }>('/sessions/:id/audio', async (request, reply) => {
+  const { id } = request.params
+  const session = db.prepare('SELECT id FROM sessions WHERE id = ?').get(id)
+  if (!session) return reply.code(404).send({ error: 'not found' })
+
+  const data = await request.file()
+  if (!data) return reply.code(400).send({ error: 'no file' })
+
+  const ext = data.mimetype.includes('mp4') ? 'mp4' : 'webm'
+  const filename = `${id}.${ext}`
+  const filepath = join(UPLOADS_DIR, filename)
+
+  await pipeline(data.file, createWriteStream(filepath))
+
+  const audioUrl = `/uploads/${filename}`
+  db.prepare('UPDATE sessions SET audio_url = ? WHERE id = ?').run(audioUrl, id)
+
+  return { audio_url: audioUrl }
 })
 
 await app.listen({ port: 3001, host: '0.0.0.0' })

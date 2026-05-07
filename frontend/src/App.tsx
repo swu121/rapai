@@ -14,6 +14,7 @@ export type StoredSession = {
   ended_at: string
   transcript_words?: string  // JSON: Array<{word, start, end}> in ms
   associations_status?: string  // 'pending' | 'done' | 'failed'
+  audio_url?: string
 }
 
 const API = 'http://localhost:3001'
