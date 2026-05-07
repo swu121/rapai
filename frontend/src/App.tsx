@@ -3,6 +3,7 @@ import { MicController } from './components/MicController'
 import { WordGenerator } from './components/WordGenerator'
 import { SessionSidebar } from './components/SessionSidebar'
 import { SessionViewer } from './components/SessionViewer'
+import { HistoryRhymes } from './components/HistoryRhymes'
 import './App.css'
 
 export type StoredSession = {
@@ -18,6 +19,8 @@ const API = 'http://localhost:3001'
 function App() {
   const [sessions, setSessions] = useState<StoredSession[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [suggestedWords, setSuggestedWords] = useState<Array<{ word: string; shownAt: number }>>([])
+  const [rhymeSet, setRhymeSet] = useState<string[]>([])
 
   async function fetchSessions() {
     const res = await fetch(`${API}/sessions`)
@@ -25,6 +28,16 @@ function App() {
   }
 
   useEffect(() => { fetchSessions() }, [])
+
+  async function handleSessionSaved() {
+    setSuggestedWords([])
+    await fetchSessions()
+  }
+
+  function handleWordChange(word: string, shownAt: number) {
+    setSuggestedWords(prev => [...prev, { word, shownAt }])
+    setRhymeSet([])
+  }
 
   async function deleteSession(id: string) {
     await fetch(`${API}/sessions/${id}`, { method: 'DELETE' })
@@ -52,8 +65,9 @@ function App() {
           <SessionViewer session={selectedSession} />
         ) : (
           <div className="app-columns">
-            <WordGenerator />
-            <MicController onSessionSaved={fetchSessions} />
+            <HistoryRhymes rhymeSet={rhymeSet} />
+            <WordGenerator onWordChange={handleWordChange} onRhymesChange={setRhymeSet} />
+            <MicController onSessionSaved={handleSessionSaved} suggestedWords={suggestedWords} />
           </div>
         )}
       </main>

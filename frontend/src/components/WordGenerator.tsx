@@ -6,7 +6,17 @@ import './WordGenerator.css'
 
 const INTERVALS = [5, 10, 15] as const
 
-export function WordGenerator() {
+interface Props {
+  onWordChange?: (word: string, shownAt: number) => void
+  onRhymesChange?: (words: string[]) => void
+}
+
+function pickRandom<T>(arr: T[], n: number): T[] {
+  const shuffled = [...arr].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, n)
+}
+
+export function WordGenerator({ onWordChange, onRhymesChange }: Props) {
   const [intervalSecs, setIntervalSecs] = useState<number>(10)
   const [secondsLeft, setSecondsLeft] = useState<number>(10)
   const [isRunning, setIsRunning] = useState(true)
@@ -19,13 +29,15 @@ export function WordGenerator() {
   currentWordRef.current = currentWord
 
   useEffect(() => {
+    onWordChange?.(currentWord, Date.now())
     let cancelled = false
     setIsFetching(true)
     setRhymes([])
     getRhymes(currentWord).then(results => {
       if (!cancelled) {
-        setRhymes(results)
+        setRhymes(pickRandom(results, 5))
         setIsFetching(false)
+        onRhymesChange?.(results)
       }
     })
     return () => { cancelled = true }

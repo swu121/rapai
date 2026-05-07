@@ -1,0 +1,34 @@
+.history-rhymes {
+  position: fixed;
+  top: 1.25rem;
+  left: calc(240px + 1.25rem);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  min-width: 140px;
+  backdrop-filter: blur(8px);
+}
+
+.hr-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 0 0 0.75rem;
+}
+
+.hr-word {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.02em;
+  padding: 0.2rem 0;
+}
+
+.hr-count {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.4);
+  margin-left: 0.25rem;
+}

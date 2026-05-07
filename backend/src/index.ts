@@ -5,6 +5,8 @@ import { randomUUID } from 'crypto'
 
 const db = new Database('./sessions.db')
 
+db.pragma('foreign_keys = ON')
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,
@@ -15,14 +17,83 @@ db.exec(`
   )
 `)
 
+for (const stmt of [
+  'ALTER TABLE sessions ADD COLUMN transcript_words TEXT',
+  'ALTER TABLE sessions ADD COLUMN suggested_words TEXT',
+]) {
+  try { db.exec(stmt) } catch { /* column already exists */ }
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS word_associations (
+    suggested_word TEXT NOT NULL,
+    used_word      TEXT NOT NULL,
+    session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    count          INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (suggested_word, used_word, session_id)
+  )
+`)
+
 interface PostSessionBody {
   transcript: string
   started_at: string
   ended_at: string
+  transcript_words?: Array<{ word: string; start: number; end: number }>
+  suggested_words?: Array<{ word: string; shownAt: number }>
 }
 
 interface SessionParams {
   id: string
+}
+
+async function runAssociationJob(
+  sessionId: string,
+  transcriptWords: Array<{ word: string; start: number; end: number }>,
+  suggestedWords: Array<{ word: string; shownAt: number }>
+): Promise<void> {
+  if (!transcriptWords.length || !suggestedWords.length) return
+
+  const uniqueWords = [...new Set(suggestedWords.map(s => s.word))]
+  const rhymeMap = new Map<string, Set<string>>()
+
+  await Promise.all(uniqueWords.map(async (word) => {
+    const res = await fetch(`https://api.datamuse.com/words?rel_rhy=${encodeURIComponent(word)}&max=1000`)
+    const results: { word: string }[] = await res.json()
+    rhymeMap.set(word, new Set(results.map(r => r.word.toLowerCase())))
+  }))
+
+  const sortedSuggested = [...suggestedWords].sort((a, b) => a.shownAt - b.shownAt)
+  const sortedTranscript = [...transcriptWords].sort((a, b) => a.start - b.start)
+
+  const upsert = db.prepare(`
+    INSERT INTO word_associations (suggested_word, used_word, session_id, count)
+    VALUES (?, ?, ?, 1)
+    ON CONFLICT(suggested_word, used_word, session_id) DO UPDATE SET count = count + 1
+  `)
+
+  const upsertBatch = db.transaction((pairs: Array<[string, string]>) => {
+    for (const [suggested, used] of pairs) {
+      upsert.run(suggested, used, sessionId)
+    }
+  })
+
+  for (let i = 0; i < sortedSuggested.length; i++) {
+    const { word: suggestedWord, shownAt } = sortedSuggested[i]
+    const nextShownAt = sortedSuggested[i + 1]?.shownAt ?? Infinity
+
+    const rhymeSet = rhymeMap.get(suggestedWord)
+    if (!rhymeSet) continue
+
+    const pairs: Array<[string, string]> = []
+    for (const tw of sortedTranscript) {
+      if (tw.start < shownAt || tw.start >= nextShownAt) continue
+      const w = tw.word.toLowerCase()
+      if (w.length <= 1) continue
+      if (w === suggestedWord.toLowerCase()) continue
+      if (rhymeSet.has(w)) pairs.push([suggestedWord.toLowerCase(), w])
+    }
+    if (pairs.length) upsertBatch(pairs)
+  }
 }
 
 const app = Fastify({ logger: true })
@@ -35,16 +106,23 @@ app.get('/sessions', async () => {
 })
 
 app.post<{ Body: PostSessionBody }>('/sessions', async (request, reply) => {
-  const { transcript, started_at, ended_at } = request.body
+  const { transcript, started_at, ended_at, transcript_words, suggested_words } = request.body
   const id = randomUUID()
   const title = transcript.trim().split(/\s+/).slice(0, 6).join(' ') || 'Untitled'
 
   db.prepare(
-    'INSERT INTO sessions (id, transcript, title, started_at, ended_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(id, transcript, title, started_at, ended_at)
+    'INSERT INTO sessions (id, transcript, title, started_at, ended_at, transcript_words, suggested_words) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    id, transcript, title, started_at, ended_at,
+    transcript_words ? JSON.stringify(transcript_words) : null,
+    suggested_words ? JSON.stringify(suggested_words) : null,
+  )
 
-  reply.code(201)
-  return { id, transcript, title, started_at, ended_at }
+  reply.code(201).send({ id, transcript, title, started_at, ended_at })
+
+  runAssociationJob(id, transcript_words ?? [], suggested_words ?? []).catch(err =>
+    app.log.error({ err }, 'association job failed')
+  )
 })
 
 app.delete<{ Params: SessionParams }>('/sessions/:id', async (request, reply) => {
@@ -52,6 +130,32 @@ app.delete<{ Params: SessionParams }>('/sessions/:id', async (request, reply) =>
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
   reply.code(204)
   return null
+})
+
+app.post<{ Body: { words: string[] } }>('/word-associations/lookup', async (request) => {
+  const { words } = request.body
+  if (!words?.length) return []
+  const lower = words.map(w => w.toLowerCase())
+  const placeholders = lower.map(() => '?').join(', ')
+  const rows = db.prepare(`
+    SELECT used_word, SUM(count) as count
+    FROM word_associations
+    WHERE used_word IN (${placeholders})
+    GROUP BY used_word
+    ORDER BY count DESC
+  `).all(...lower)
+  return rows
+})
+
+app.get<{ Params: { word: string } }>('/word-associations/:word', async (request) => {
+  const rows = db.prepare(`
+    SELECT used_word, SUM(count) as count
+    FROM word_associations
+    WHERE suggested_word = ?
+    GROUP BY used_word
+    ORDER BY count DESC
+  `).all(request.params.word.toLowerCase())
+  return rows
 })
 
 await app.listen({ port: 3001, host: '0.0.0.0' })

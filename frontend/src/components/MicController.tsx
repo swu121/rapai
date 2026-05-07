@@ -5,18 +5,20 @@ type MicState = "idle" | "granted" | "denied" | "error";
 type DeepgramSocket = Awaited<
   ReturnType<DeepgramClient["listen"]["v1"]["connect"]>
 >;
+type DeepgramWord = { word: string; start: number; end: number };
 type TranscriptResult = {
-  channel?: { alternatives?: { transcript?: string }[] };
+  channel?: { alternatives?: { transcript?: string; words?: DeepgramWord[] }[] };
   is_final?: boolean;
 };
 
 type Props = {
   onSessionSaved: () => void
+  suggestedWords: Array<{ word: string; shownAt: number }>
 }
 
 const API = 'http://localhost:3001'
 
-export function MicController({ onSessionSaved }: Props) {
+export function MicController({ onSessionSaved, suggestedWords }: Props) {
   const [micState, setMicState] = useState<MicState>("idle");
   const [finalTranscript, setFinalTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
@@ -25,6 +27,8 @@ export function MicController({ onSessionSaved }: Props) {
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const socketRef = useRef<DeepgramSocket | null>(null);
   const startedAtRef = useRef<string | null>(null);
+  const streamStartedAtRef = useRef<number | null>(null);
+  const transcriptWordsRef = useRef<Array<{ word: string; start: number; end: number }>>([]);
 
   async function startAudioPipeline(stream: MediaStream) {
     const deepgram = new DeepgramClient({
@@ -49,6 +53,15 @@ export function MicController({ onSessionSaved }: Props) {
       if (result.is_final) {
         setFinalTranscript((prev) => (prev ? prev + " " + text : text));
         setInterimTranscript("");
+        const words = result.channel?.alternatives?.[0]?.words ?? [];
+        const base = streamStartedAtRef.current ?? 0;
+        for (const w of words) {
+          transcriptWordsRef.current.push({
+            word: w.word.toLowerCase(),
+            start: base + w.start * 1000,
+            end: base + w.end * 1000,
+          });
+        }
       } else {
         setInterimTranscript(text);
       }
@@ -59,6 +72,7 @@ export function MicController({ onSessionSaved }: Props) {
 
     socket.connect();
     await socket.waitForOpen();
+    streamStartedAtRef.current = Date.now();
     console.log("Deepgram connected");
 
     socketRef.current = socket;
@@ -130,6 +144,8 @@ export function MicController({ onSessionSaved }: Props) {
             transcript,
             started_at: startedAtRef.current,
             ended_at: endedAt,
+            transcript_words: transcriptWordsRef.current,
+            suggested_words: suggestedWords,
           }),
         })
         onSessionSaved()
@@ -139,6 +155,8 @@ export function MicController({ onSessionSaved }: Props) {
     }
 
     startedAtRef.current = null;
+    streamStartedAtRef.current = null;
+    transcriptWordsRef.current = [];
   }
 
   return (
