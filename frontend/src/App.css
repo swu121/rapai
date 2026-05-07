@@ -141,6 +141,33 @@
 .session-viewer-title {
   margin: 0 0 0.4rem;
   font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.session-viewer-title--editable {
+  cursor: text;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  transition: background 0.1s;
+}
+
+.session-viewer-title--editable:hover {
+  background: var(--border);
+}
+
+.session-viewer-title--input {
+  all: unset;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border: 1.5px solid var(--accent);
+  outline: none;
+  background: var(--code-bg);
+  color: var(--text-h);
 }
 
 .session-meta {
@@ -154,6 +181,19 @@
   line-height: 1.75;
   white-space: pre-wrap;
   color: var(--text-h);
+}
+
+.session-transcript--lyrics {
+  white-space: normal;
+}
+
+.transcript-line {
+  margin: 0;
+  line-height: 1.75;
+}
+
+.transcript-line + .transcript-line {
+  margin-top: 0.15em;
 }
 
 /* ── Associated word highlighting ── */

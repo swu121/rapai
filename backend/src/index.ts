@@ -125,6 +125,16 @@ app.post<{ Body: PostSessionBody }>('/sessions', async (request, reply) => {
   )
 })
 
+app.patch<{ Params: SessionParams; Body: { title: string } }>('/sessions/:id', async (request, reply) => {
+  const { id } = request.params
+  const { title } = request.body
+  const trimmed = title?.trim()
+  if (!trimmed) return reply.code(400).send({ error: 'title required' })
+  const result = db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(trimmed, id)
+  if (result.changes === 0) return reply.code(404).send({ error: 'not found' })
+  return { id, title: trimmed }
+})
+
 app.delete<{ Params: SessionParams }>('/sessions/:id', async (request, reply) => {
   const { id } = request.params
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)

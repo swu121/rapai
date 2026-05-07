@@ -12,6 +12,7 @@ export type StoredSession = {
   title: string
   started_at: string
   ended_at: string
+  transcript_words?: string  // JSON: Array<{word, start, end}> in ms
 }
 
 const API = 'http://localhost:3001'
@@ -39,6 +40,10 @@ function App() {
     setRhymeSet([])
   }
 
+  function handleTitleChange(id: string, title: string) {
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, title } : s))
+  }
+
   async function deleteSession(id: string) {
     await fetch(`${API}/sessions/${id}`, { method: 'DELETE' })
     setSessions(prev => prev.filter(s => s.id !== id))
@@ -62,7 +67,7 @@ function App() {
       />
       <main className="app-main">
         {selectedSession ? (
-          <SessionViewer session={selectedSession} />
+          <SessionViewer session={selectedSession} onTitleChange={handleTitleChange} />
         ) : (
           <div className="app-columns">
             <HistoryRhymes rhymeSet={rhymeSet} />
