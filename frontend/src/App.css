@@ -198,6 +198,28 @@
 
 /* ── Associated word highlighting ── */
 
+.transcript-word--editable {
+  cursor: text;
+  border-radius: 2px;
+  transition: background 0.1s;
+}
+
+.transcript-word--editable:hover {
+  background: var(--border);
+}
+
+.transcript-word--input {
+  all: unset;
+  border-bottom: 1.5px solid var(--accent);
+  color: var(--text-h);
+  font-size: inherit;
+  font-family: inherit;
+  line-height: inherit;
+  min-width: 2ch;
+  padding: 0;
+  cursor: text;
+}
+
 .transcript-word--associated {
   background: rgba(170, 59, 255, 0.12);
   color: var(--accent);
@@ -261,4 +283,30 @@
   color: var(--text);
   margin-top: 2px;
   opacity: 0.7;
+}
+
+/* ── Associations processing indicator ── */
+
+.associations-processing {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text);
+  margin-bottom: 1.25rem;
+}
+
+.associations-processing-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }

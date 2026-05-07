@@ -24,6 +24,12 @@ for (const stmt of [
   try { db.exec(stmt) } catch { /* column already exists */ }
 }
 
+try {
+  db.exec("ALTER TABLE sessions ADD COLUMN associations_status TEXT NOT NULL DEFAULT 'pending'")
+  // First time adding this column — all existing rows have already processed, mark them done
+  db.exec("UPDATE sessions SET associations_status = 'done'")
+} catch { /* column already exists */ }
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS word_associations (
     suggested_word TEXT NOT NULL,
@@ -46,12 +52,25 @@ interface SessionParams {
   id: string
 }
 
+interface WordParams {
+  id: string
+  index: string
+}
+
 async function runAssociationJob(
   sessionId: string,
   transcriptWords: Array<{ word: string; start: number; end: number }>,
   suggestedWords: Array<{ word: string; shownAt: number }>
 ): Promise<void> {
-  if (!transcriptWords.length || !suggestedWords.length) return
+  const setStatus = (status: 'done' | 'failed') =>
+    db.prepare("UPDATE sessions SET associations_status = ? WHERE id = ?").run(status, sessionId)
+
+  if (!transcriptWords.length || !suggestedWords.length) {
+    setStatus('done')
+    return
+  }
+
+  try {
 
   const uniqueWords = [...new Set(suggestedWords.map(s => s.word))]
   const rhymeMap = new Map<string, Set<string>>()
@@ -94,6 +113,12 @@ async function runAssociationJob(
     }
     if (pairs.length) upsertBatch(pairs)
   }
+
+  setStatus('done')
+  } catch (err) {
+    setStatus('failed')
+    throw err
+  }
 }
 
 const app = Fastify({ logger: true })
@@ -103,6 +128,12 @@ app.get('/health', async () => ({ status: 'ok' }))
 
 app.get('/sessions', async () => {
   return db.prepare('SELECT * FROM sessions ORDER BY started_at DESC').all()
+})
+
+app.get<{ Params: SessionParams }>('/sessions/:id', async (request, reply) => {
+  const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(request.params.id)
+  if (!session) return reply.code(404).send({ error: 'not found' })
+  return session
 })
 
 app.post<{ Body: PostSessionBody }>('/sessions', async (request, reply) => {
@@ -118,11 +149,54 @@ app.post<{ Body: PostSessionBody }>('/sessions', async (request, reply) => {
     suggested_words ? JSON.stringify(suggested_words) : null,
   )
 
-  reply.code(201).send({ id, transcript, title, started_at, ended_at })
+  reply.code(201).send({ id, transcript, title, started_at, ended_at, associations_status: 'pending' })
 
   runAssociationJob(id, transcript_words ?? [], suggested_words ?? []).catch(err =>
     app.log.error({ err }, 'association job failed')
   )
+})
+
+app.patch<{ Params: WordParams; Body: { word: string } }>('/sessions/:id/words/:index', async (request, reply) => {
+  const { id, index: indexStr } = request.params
+  const newWord = request.body.word?.trim()
+  if (!newWord) return reply.code(400).send({ error: 'word required' })
+
+  const session = db.prepare('SELECT transcript_words FROM sessions WHERE id = ?').get(id) as
+    | { transcript_words: string | null }
+    | undefined
+  if (!session) return reply.code(404).send({ error: 'not found' })
+  if (!session.transcript_words) return reply.code(400).send({ error: 'no word-level data for this session' })
+
+  const words: Array<{ word: string; start: number; end: number }> = JSON.parse(session.transcript_words)
+  const idx = parseInt(indexStr, 10)
+  if (isNaN(idx) || idx < 0 || idx >= words.length) return reply.code(400).send({ error: 'index out of range' })
+
+  const oldWord = words[idx].word.toLowerCase()
+  const newWordLower = newWord.toLowerCase()
+  words[idx] = { ...words[idx], word: newWord }
+  const newTranscript = words.map(w => w.word).join(' ')
+
+  const hasAssocs = oldWord !== newWordLower &&
+    db.prepare('SELECT 1 FROM word_associations WHERE used_word = ? AND session_id = ? LIMIT 1')
+      .get(oldWord, id) != null
+
+  db.transaction(() => {
+    db.prepare('UPDATE sessions SET transcript = ?, transcript_words = ? WHERE id = ?')
+      .run(newTranscript, JSON.stringify(words), id)
+
+    if (hasAssocs) {
+      db.prepare(`
+        INSERT INTO word_associations (suggested_word, used_word, session_id, count)
+        SELECT suggested_word, ?, session_id, count
+        FROM word_associations WHERE used_word = ? AND session_id = ?
+        ON CONFLICT(suggested_word, used_word, session_id) DO UPDATE SET count = count + excluded.count
+      `).run(newWordLower, oldWord, id)
+      db.prepare('DELETE FROM word_associations WHERE used_word = ? AND session_id = ?')
+        .run(oldWord, id)
+    }
+  })()
+
+  return { transcript: newTranscript, transcript_words: JSON.stringify(words), associationsMoved: hasAssocs }
 })
 
 app.patch<{ Params: SessionParams; Body: { title: string } }>('/sessions/:id', async (request, reply) => {
