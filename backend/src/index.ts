@@ -158,4 +158,39 @@ app.get<{ Params: { word: string } }>('/word-associations/:word', async (request
   return rows
 })
 
+app.get<{ Params: { id: string } }>('/sessions/:id/associations', async (request) => {
+  const session = db.prepare('SELECT transcript, transcript_words FROM sessions WHERE id = ?').get(request.params.id) as
+    | { transcript: string; transcript_words: string | null }
+    | undefined
+  if (!session) return []
+
+  let words: string[]
+  if (session.transcript_words) {
+    const tw = JSON.parse(session.transcript_words) as Array<{ word: string }>
+    words = tw.map(w => w.word.toLowerCase().replace(/[^a-z']/g, '')).filter(Boolean)
+  } else {
+    words = session.transcript.trim().split(/\s+/).map(w => w.toLowerCase().replace(/[^a-z']/g, '')).filter(Boolean)
+  }
+
+  const unique = [...new Set(words)]
+  if (!unique.length) return []
+
+  const placeholders = unique.map(() => '?').join(', ')
+  const rows = db.prepare(`
+    SELECT
+      wa.used_word,
+      wa.suggested_word,
+      wa.session_id,
+      wa.count,
+      s.title        AS session_title,
+      s.started_at   AS session_started_at
+    FROM word_associations wa
+    JOIN sessions s ON s.id = wa.session_id
+    WHERE wa.used_word IN (${placeholders})
+    ORDER BY wa.count DESC
+  `).all(...unique)
+
+  return rows
+})
+
 await app.listen({ port: 3001, host: '0.0.0.0' })

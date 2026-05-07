@@ -155,3 +155,70 @@
   white-space: pre-wrap;
   color: var(--text-h);
 }
+
+/* ── Associated word highlighting ── */
+
+.transcript-word--associated {
+  background: rgba(170, 59, 255, 0.12);
+  color: var(--accent);
+  border-radius: 3px;
+  padding: 1px 3px;
+  cursor: default;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--accent);
+  transition: background 0.1s;
+}
+
+.transcript-word--associated:hover {
+  background: rgba(170, 59, 255, 0.26);
+}
+
+.word-tooltip {
+  position: fixed;
+  z-index: 1000;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  transform: translateY(calc(-100% - 10px));
+  min-width: 200px;
+  max-width: 280px;
+}
+
+.word-tooltip--below {
+  transform: translateY(10px);
+}
+
+.word-tooltip-entry + .word-tooltip-entry {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.word-tooltip-suggestion {
+  font-size: 0.85rem;
+  color: var(--text-h);
+}
+
+.word-tooltip-suggestion strong {
+  color: var(--accent);
+}
+
+.word-tooltip-session {
+  font-size: 0.8rem;
+  color: var(--text);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.word-tooltip-date {
+  font-size: 0.75rem;
+  color: var(--text);
+  margin-top: 2px;
+  opacity: 0.7;
+}
