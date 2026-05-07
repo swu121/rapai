@@ -89,6 +89,11 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [draftWord, setDraftWord] = useState('')
 
+  const [editingRange, setEditingRange] = useState<{ start: number; end: number } | null>(null)
+  const [rangeDraft, setRangeDraft] = useState('')
+  const rangeEscapeRef = useRef(false)
+  const transcriptRef = useRef<HTMLDivElement>(null)
+
   const [assocMap, setAssocMap] = useState<Map<string, Association[]>>(new Map())
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
   const [isProcessing, setIsProcessing] = useState(session.associations_status === 'pending')
@@ -100,6 +105,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   useEffect(() => {
     setLocalWords(session.transcript_words ? JSON.parse(session.transcript_words) : [])
     setEditingIdx(null)
+    setEditingRange(null)
     setDraftTitle(session.title)
     setEditingTitle(false)
     setIsProcessing(session.associations_status === 'pending')
@@ -185,19 +191,31 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   async function commitWord(idx: number) {
     const trimmed = draftWord.trim()
     const original = localWords[idx].word
-    if (!trimmed || trimmed.toLowerCase() === original.toLowerCase()) {
-      setEditingIdx(null)
+    setEditingIdx(null)
+
+    if (!trimmed) {
+      // Delete the word
+      const prevWords = localWords
+      const prevAssocMap = assocMap
+      const deletedKey = normalizeKey(original)
+
+      setLocalWords(prev => prev.filter((_, i) => i !== idx))
+      if (assocMap.has(deletedKey)) {
+        setAssocMap(prev => { const next = new Map(prev); next.delete(deletedKey); return next })
+      }
+
+      await fetch(`${API}/sessions/${session.id}/words/${idx}`, { method: 'DELETE' })
+        .catch(() => { setLocalWords(prevWords); setAssocMap(prevAssocMap) })
       return
     }
+
+    if (trimmed.toLowerCase() === original.toLowerCase()) return
 
     const prevWords = localWords
     const prevAssocMap = assocMap
 
-    // Optimistic: update word in local state
     setLocalWords(prev => prev.map((w, i) => i === idx ? { ...w, word: trimmed } : w))
-    setEditingIdx(null)
 
-    // Optimistic: migrate assocMap from old key → new key
     const oldKey = normalizeKey(original)
     const newKey = normalizeKey(trimmed)
     if (oldKey !== newKey && assocMap.has(oldKey)) {
@@ -226,6 +244,81 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     if (e.key === 'Escape') setEditingIdx(null)
   }
 
+  // ── Range editing ──────────────────────────────────────────────────────────
+
+  function handleTranscriptMouseUp() {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed || !transcriptRef.current) return
+
+    const spans = transcriptRef.current.querySelectorAll<HTMLElement>('[data-word-idx]')
+    const indices: number[] = []
+    for (const span of spans) {
+      if (sel.containsNode(span, true)) indices.push(Number(span.dataset.wordIdx))
+    }
+    if (indices.length < 2) return
+
+    const start = Math.min(...indices)
+    const end = Math.max(...indices)
+    sel.removeAllRanges()
+    setEditingIdx(null)
+    setEditingRange({ start, end })
+    setRangeDraft(localWords.slice(start, end + 1).map(w => w.word).join(' '))
+  }
+
+  async function commitRange() {
+    if (rangeEscapeRef.current) {
+      rangeEscapeRef.current = false
+      setEditingRange(null)
+      return
+    }
+    if (!editingRange) return
+    const { start, end } = editingRange
+    const trimmed = rangeDraft.trim()
+    setEditingRange(null)
+
+    const originalText = localWords.slice(start, end + 1).map(w => w.word).join(' ')
+    if (trimmed === originalText) return
+
+    const prevWords = localWords
+    const prevAssocMap = assocMap
+    const replacedKeys = localWords.slice(start, end + 1).map(w => normalizeKey(w.word)).filter(Boolean)
+
+    if (!trimmed) {
+      setLocalWords(prev => prev.filter((_, i) => i < start || i > end))
+    } else {
+      const rangeStartTime = localWords[start].start
+      const rangeEndTime = localWords[end].end
+      const parts = trimmed.split(/\s+/)
+      const interval = parts.length > 1 ? (rangeEndTime - rangeStartTime) / parts.length : 0
+      const newWordObjs: TimedWord[] = parts.map((word, i) => ({
+        word,
+        start: rangeStartTime + i * interval,
+        end: i < parts.length - 1 ? rangeStartTime + (i + 1) * interval : rangeEndTime,
+      }))
+      setLocalWords(prev => [...prev.slice(0, start), ...newWordObjs, ...prev.slice(end + 1)])
+    }
+
+    setAssocMap(prev => {
+      const next = new Map(prev)
+      for (const k of replacedKeys) next.delete(k)
+      return next
+    })
+
+    await fetch(`${API}/sessions/${session.id}/word-range`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end, replacement: trimmed }),
+    }).catch(() => { setLocalWords(prevWords); setAssocMap(prevAssocMap) })
+  }
+
+  function handleRangeKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+    if (e.key === 'Escape') {
+      rangeEscapeRef.current = true
+      ;(e.currentTarget as HTMLInputElement).blur()
+    }
+  }
+
   // ── Tooltip ────────────────────────────────────────────────────────────────
 
   function handleWordHover(e: React.MouseEvent, assocs: Association[]) {
@@ -237,6 +330,20 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   // ── Word renderer ──────────────────────────────────────────────────────────
 
   function renderWord(word: string, idx: number) {
+    if (editingRange && idx === editingRange.start) {
+      return (
+        <input
+          key={`range-${idx}`}
+          autoFocus
+          className="transcript-word--input transcript-word--range-input"
+          value={rangeDraft}
+          onChange={e => setRangeDraft(e.target.value)}
+          onBlur={commitRange}
+          onKeyDown={handleRangeKeyDown}
+        />
+      )
+    }
+
     if (editingIdx === idx) {
       return (
         <input
@@ -247,7 +354,6 @@ export function SessionViewer({ session, onTitleChange }: Props) {
           onChange={e => setDraftWord(e.target.value)}
           onBlur={() => commitWord(idx)}
           onKeyDown={handleWordKeyDown}
-          style={{ width: `${Math.max(draftWord.length, 2)}ch` }}
         />
       )
     }
@@ -262,6 +368,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     return (
       <span
         key={idx}
+        data-word-idx={idx}
         className={classes}
         onClick={() => { setEditingIdx(idx); setDraftWord(word) }}
         onMouseEnter={assocs?.length ? e => handleWordHover(e, assocs) : undefined}
@@ -306,17 +413,26 @@ export function SessionViewer({ session, onTitleChange }: Props) {
       )}
 
       {lines ? (
-        <div className="session-transcript session-transcript--lyrics">
-          {lines.map((line, li) => (
-            <p key={li} className="transcript-line">
-              {line.map((wordIdx, wi) => (
-                <Fragment key={wordIdx}>
-                  {renderWord(localWords[wordIdx].word, wordIdx)}
-                  {wi < line.length - 1 ? ' ' : ''}
-                </Fragment>
-              ))}
-            </p>
-          ))}
+        <div
+          ref={transcriptRef}
+          className="session-transcript session-transcript--lyrics"
+          onMouseUp={handleTranscriptMouseUp}
+        >
+          {lines.map((line, li) => {
+            const visible = line.filter(
+              wordIdx => !(editingRange && wordIdx > editingRange.start && wordIdx <= editingRange.end)
+            )
+            return (
+              <p key={li} className="transcript-line">
+                {visible.map((wordIdx, wi) => (
+                  <Fragment key={wordIdx}>
+                    {renderWord(localWords[wordIdx].word, wordIdx)}
+                    {wi < visible.length - 1 ? ' ' : ''}
+                  </Fragment>
+                ))}
+              </p>
+            )
+          })}
         </div>
       ) : (
         <div className="session-transcript">

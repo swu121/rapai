@@ -26,9 +26,10 @@ for (const stmt of [
 
 try {
   db.exec("ALTER TABLE sessions ADD COLUMN associations_status TEXT NOT NULL DEFAULT 'pending'")
-  // First time adding this column — all existing rows have already processed, mark them done
-  db.exec("UPDATE sessions SET associations_status = 'done'")
 } catch { /* column already exists */ }
+
+// Any sessions still 'pending' on startup had their jobs killed by a restart — mark them done
+db.exec("UPDATE sessions SET associations_status = 'done' WHERE associations_status = 'pending'")
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS word_associations (
@@ -76,9 +77,20 @@ async function runAssociationJob(
   const rhymeMap = new Map<string, Set<string>>()
 
   await Promise.all(uniqueWords.map(async (word) => {
-    const res = await fetch(`https://api.datamuse.com/words?rel_rhy=${encodeURIComponent(word)}&max=1000`)
-    const results: { word: string }[] = await res.json()
-    rhymeMap.set(word, new Set(results.map(r => r.word.toLowerCase())))
+    const encoded = encodeURIComponent(word)
+    const [exactRes, nearRes] = await Promise.all([
+      fetch(`https://api.datamuse.com/words?rel_rhy=${encoded}&max=1000`),
+      fetch(`https://api.datamuse.com/words?rel_nry=${encoded}&max=1000`),
+    ])
+    const [exactResults, nearResults]: { word: string }[][] = await Promise.all([
+      exactRes.json(),
+      nearRes.json(),
+    ])
+    const combined = new Set([
+      ...exactResults.map(r => r.word.toLowerCase()),
+      ...nearResults.map(r => r.word.toLowerCase()),
+    ])
+    rhymeMap.set(word, combined)
   }))
 
   const sortedSuggested = [...suggestedWords].sort((a, b) => a.shownAt - b.shownAt)
@@ -197,6 +209,82 @@ app.patch<{ Params: WordParams; Body: { word: string } }>('/sessions/:id/words/:
   })()
 
   return { transcript: newTranscript, transcript_words: JSON.stringify(words), associationsMoved: hasAssocs }
+})
+
+app.delete<{ Params: WordParams }>('/sessions/:id/words/:index', async (request, reply) => {
+  const { id, index: indexStr } = request.params
+
+  const session = db.prepare('SELECT transcript_words FROM sessions WHERE id = ?').get(id) as
+    | { transcript_words: string | null }
+    | undefined
+  if (!session) return reply.code(404).send({ error: 'not found' })
+  if (!session.transcript_words) return reply.code(400).send({ error: 'no word-level data for this session' })
+
+  const words: Array<{ word: string; start: number; end: number }> = JSON.parse(session.transcript_words)
+  const idx = parseInt(indexStr, 10)
+  if (isNaN(idx) || idx < 0 || idx >= words.length) return reply.code(400).send({ error: 'index out of range' })
+
+  const deletedKey = words[idx].word.toLowerCase().replace(/[^a-z']/g, '')
+  words.splice(idx, 1)
+  const newTranscript = words.map(w => w.word).join(' ')
+
+  db.transaction(() => {
+    db.prepare('UPDATE sessions SET transcript = ?, transcript_words = ? WHERE id = ?')
+      .run(newTranscript, JSON.stringify(words), id)
+    if (deletedKey) {
+      db.prepare('DELETE FROM word_associations WHERE used_word = ? AND session_id = ?')
+        .run(deletedKey, id)
+    }
+  })()
+
+  return { transcript: newTranscript, transcript_words: JSON.stringify(words) }
+})
+
+app.patch<{ Params: SessionParams; Body: { start: number; end: number; replacement: string } }>('/sessions/:id/word-range', async (request, reply) => {
+  const { id } = request.params
+  const { start, end, replacement } = request.body
+  const trimmed = (replacement ?? '').trim()
+
+  const session = db.prepare('SELECT transcript_words FROM sessions WHERE id = ?').get(id) as
+    | { transcript_words: string | null }
+    | undefined
+  if (!session) return reply.code(404).send({ error: 'not found' })
+  if (!session.transcript_words) return reply.code(400).send({ error: 'no word-level data for this session' })
+
+  const words: Array<{ word: string; start: number; end: number }> = JSON.parse(session.transcript_words)
+  if (start < 0 || end >= words.length || start > end) return reply.code(400).send({ error: 'invalid range' })
+
+  const replacedKeys = words.slice(start, end + 1)
+    .map(w => w.word.toLowerCase().replace(/[^a-z']/g, ''))
+    .filter(Boolean)
+
+  let newWords: Array<{ word: string; start: number; end: number }>
+  if (!trimmed) {
+    newWords = []
+  } else {
+    const rangeStart = words[start].start
+    const rangeEnd = words[end].end
+    const parts = trimmed.split(/\s+/)
+    const interval = parts.length > 1 ? (rangeEnd - rangeStart) / parts.length : 0
+    newWords = parts.map((word, i) => ({
+      word,
+      start: rangeStart + i * interval,
+      end: i < parts.length - 1 ? rangeStart + (i + 1) * interval : rangeEnd,
+    }))
+  }
+
+  const updated = [...words.slice(0, start), ...newWords, ...words.slice(end + 1)]
+  const newTranscript = updated.map(w => w.word).join(' ')
+
+  db.transaction(() => {
+    db.prepare('UPDATE sessions SET transcript = ?, transcript_words = ? WHERE id = ?')
+      .run(newTranscript, JSON.stringify(updated), id)
+    for (const key of replacedKeys) {
+      db.prepare('DELETE FROM word_associations WHERE used_word = ? AND session_id = ?').run(key, id)
+    }
+  })()
+
+  return { transcript: newTranscript, transcript_words: JSON.stringify(updated) }
 })
 
 app.patch<{ Params: SessionParams; Body: { title: string } }>('/sessions/:id', async (request, reply) => {
