@@ -77,12 +77,11 @@ export function MicController({ onSessionSaved, suggestedWords, onRecordingChang
         setFinalTranscript((prev) => (prev ? prev + " " + text : text));
         setInterimTranscript("");
         const words = result.channel?.alternatives?.[0]?.words ?? [];
-        const base = streamStartedAtRef.current ?? 0;
         for (const w of words) {
           transcriptWordsRef.current.push({
             word: w.word.toLowerCase(),
-            start: base + w.start * 1000,
-            end: base + w.end * 1000,
+            start: Math.round(w.start * 1000),
+            end: Math.round(w.end * 1000),
           });
         }
       } else {
@@ -213,8 +212,13 @@ export function MicController({ onSessionSaved, suggestedWords, onRecordingChang
 
     if (transcript && startedAtRef.current) {
       try {
+        const streamStartMs = streamStartedAtRef.current ?? 0
+        const relativeSuggestedWords = suggestedWords.map(sw => ({
+          ...sw,
+          shownAt: Math.max(0, sw.shownAt - streamStartMs),
+        }))
         console.log('[session] transcript words:', transcriptWordsRef.current.length, transcriptWordsRef.current)
-        console.log('[session] suggested words to send:', suggestedWords.length, suggestedWords)
+        console.log('[session] suggested words to send:', relativeSuggestedWords.length, relativeSuggestedWords)
         const res = await fetch(`${API}/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -223,7 +227,7 @@ export function MicController({ onSessionSaved, suggestedWords, onRecordingChang
             started_at: startedAtRef.current,
             ended_at: endedAt,
             transcript_words: transcriptWordsRef.current,
-            suggested_words: suggestedWords,
+            suggested_words: relativeSuggestedWords,
           }),
         });
         const sessionData = await res.json();

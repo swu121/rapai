@@ -160,6 +160,12 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   const [currentTime, setCurrentTime] = useState(0)
   const [audioDuration, setAudioDuration] = useState(0)
 
+  function seekToWord(startMs: number) {
+    if (!audioRef.current) return
+    audioRef.current.currentTime = startMs / 1000
+    if (!isPlaying) audioRef.current.play()
+  }
+
   useEffect(() => {
     setLocalWords(session.transcript_words ? JSON.parse(session.transcript_words) : [])
     setEditingIdx(null)
@@ -524,10 +530,28 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     }
 
     const assocs = assocMap.get(localWords[idx].start)
+    const isActive = idx === activeWordIdx
     const classes = [
       'transcript-word--editable',
       assocs?.length ? 'transcript-word--associated' : '',
+      session.audio_url ? 'transcript-word--seekable' : '',
+      isActive ? 'transcript-word--active' : '',
     ].filter(Boolean).join(' ')
+
+    function enterEditMode() {
+      window.getSelection()?.removeAllRanges()
+      setPendingRange(null)
+      setEditingIdx(idx)
+      setDraftWord(word)
+    }
+
+    function enterRangeEditMode() {
+      window.getSelection()?.removeAllRanges()
+      setPendingRange(null)
+      setEditingIdx(null)
+      setEditingRange(pendingRange)
+      setRangeDraft(localWords.slice(pendingRange!.start, pendingRange!.end + 1).map(w => w.word).join(' '))
+    }
 
     return (
       <span
@@ -536,18 +560,19 @@ export function SessionViewer({ session, onTitleChange }: Props) {
         className={classes}
         onClick={() => {
           if (pendingRange && idx >= pendingRange.start && idx <= pendingRange.end) {
-            window.getSelection()?.removeAllRanges()
+            enterRangeEditMode()
+          } else if (session.audio_url) {
             setPendingRange(null)
-            setEditingIdx(null)
-            setEditingRange(pendingRange)
-            setRangeDraft(localWords.slice(pendingRange.start, pendingRange.end + 1).map(w => w.word).join(' '))
+            window.getSelection()?.removeAllRanges()
+            seekToWord(localWords[idx].start)
           } else {
-            window.getSelection()?.removeAllRanges()
-            setPendingRange(null)
-            setEditingIdx(idx)
-            setDraftWord(word)
+            enterEditMode()
           }
         }}
+        onDoubleClick={session.audio_url ? () => {
+          if (pendingRange && idx >= pendingRange.start && idx <= pendingRange.end) return
+          enterEditMode()
+        } : undefined}
         onContextMenu={e => handleWordContextMenu(e, idx)}
         onMouseEnter={assocs?.length ? e => handleWordHover(e, assocs, localWords[idx].start) : undefined}
         onMouseLeave={assocs?.length ? () => setTooltip(null) : undefined}
@@ -558,6 +583,10 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   }
 
   // ── Derived layout ─────────────────────────────────────────────────────────
+
+  const activeWordIdx = session.audio_url && currentTime > 0
+    ? localWords.findIndex(w => currentTime * 1000 >= w.start && currentTime * 1000 <= w.end)
+    : -1
 
   const lines = localWords.length
     ? detectLines(localWords, inferThreshold(localWords))

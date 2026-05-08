@@ -243,6 +243,20 @@
   background: rgba(170, 59, 255, 0.26);
 }
 
+.transcript-word--seekable {
+  cursor: pointer;
+}
+
+.transcript-word--active {
+  background: rgba(255, 200, 0, 0.28);
+  border-radius: 2px;
+  outline: 1px solid rgba(255, 200, 0, 0.55);
+}
+
+.transcript-word--active.transcript-word--associated {
+  background: rgba(255, 200, 0, 0.28);
+}
+
 .word-tooltip {
   position: fixed;
   z-index: 1000;

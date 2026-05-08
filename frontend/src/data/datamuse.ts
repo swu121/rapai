@@ -22,7 +22,7 @@ const WORD_BLACKLIST = new Set([
   'have', 'has', 'had',
   'was', 'were', 'are', 'am',
   'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
-  'not', 'no', 'yes', 'oh', 'ah',
+  'not', 'no', 'yes', 'oh', 'ah', 'hey',
 ])
 
 function isBlacklisted(word: string): boolean {
