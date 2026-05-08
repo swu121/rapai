@@ -354,6 +354,82 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Context menu ── */
+
+.context-menu {
+  position: fixed;
+  z-index: 2000;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  min-width: 180px;
+  max-width: 240px;
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 12px;
+  border-radius: 5px;
+  border: none;
+  background: none;
+  font-size: 0.875rem;
+  color: var(--text-h);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.context-menu-item:hover {
+  background: var(--border);
+}
+
+.context-menu-item--danger {
+  color: #ef4444;
+}
+
+.context-menu-item--danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.context-menu-label {
+  padding: 5px 12px 3px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text);
+  opacity: 0.55;
+}
+
+.context-menu-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 4px;
+  font-size: 0.75rem;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 5px;
+  border: none;
+  background: none;
+  font-family: inherit;
+  margin-bottom: 2px;
+  width: 100%;
+  text-align: left;
+}
+
+.context-menu-back:hover {
+  background: var(--border);
+}
+
+.context-menu-words {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
 /* ── Mic settings ── */
 
 .mic-settings {

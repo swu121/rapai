@@ -23,6 +23,15 @@ type TooltipState = {
   below: boolean
 }
 
+type ContextMenuState = {
+  x: number
+  y: number
+  wordIndices: number[]
+  hasAssocs: boolean
+  phase: 'main' | 'pick'
+  suggestedWords: string[]
+}
+
 type Props = {
   session: StoredSession
   onTitleChange: (id: string, title: string) => void
@@ -133,10 +142,13 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   const [editingRange, setEditingRange] = useState<{ start: number; end: number } | null>(null)
   const [rangeDraft, setRangeDraft] = useState('')
   const rangeEscapeRef = useRef(false)
+  const [pendingRange, setPendingRange] = useState<{ start: number; end: number } | null>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
 
   const [assocMap, setAssocMap] = useState<Map<number, Association[]>>(new Map())
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
   const [isProcessing, setIsProcessing] = useState(session.associations_status === 'pending')
 
   const [editingTitle, setEditingTitle] = useState(false)
@@ -152,12 +164,14 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     setLocalWords(session.transcript_words ? JSON.parse(session.transcript_words) : [])
     setEditingIdx(null)
     setEditingRange(null)
+    setPendingRange(null)
     setDraftTitle(session.title)
     setEditingTitle(false)
     setIsProcessing(session.associations_status === 'pending')
     setIsPlaying(false)
     setCurrentTime(0)
     setAudioDuration(0)
+    setContextMenu(null)
   }, [session.id])
 
   useEffect(() => {
@@ -286,7 +300,8 @@ export function SessionViewer({ session, onTitleChange }: Props) {
 
   // ── Range editing ──────────────────────────────────────────────────────────
 
-  function handleTranscriptMouseUp() {
+  function handleTranscriptMouseUp(e: React.MouseEvent) {
+    if (e.button !== 0) return
     const sel = window.getSelection()
     if (!sel || sel.isCollapsed || !transcriptRef.current) return
 
@@ -299,10 +314,11 @@ export function SessionViewer({ session, onTitleChange }: Props) {
 
     const start = Math.min(...indices)
     const end = Math.max(...indices)
-    sel.removeAllRanges()
+    // Keep browser highlight visible; don't enter edit mode yet.
+    // Clicking into the selection will enter edit mode; right-click shows context menu.
     setEditingIdx(null)
-    setEditingRange({ start, end })
-    setRangeDraft(localWords.slice(start, end + 1).map(w => w.word).join(' '))
+    setEditingRange(null)
+    setPendingRange({ start, end })
   }
 
   async function commitRange() {
@@ -367,6 +383,115 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     setTooltip({ assocs, wordStartMs, x: rect.left, y: below ? rect.bottom : rect.top, below })
   }
 
+  // ── Context menu ───────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!contextMenu) return
+    function onMouseDown(e: MouseEvent) {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null)
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setContextMenu(null)
+    }
+    function onScroll() { setContextMenu(null) }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('scroll', onScroll, true)
+    }
+  }, [contextMenu])
+
+  function handleWordContextMenu(e: React.MouseEvent, idx: number) {
+    e.preventDefault()
+    e.stopPropagation()
+    setTooltip(null)
+
+    let targetIndices: number[]
+    if (pendingRange && idx >= pendingRange.start && idx <= pendingRange.end) {
+      targetIndices = Array.from({ length: pendingRange.end - pendingRange.start + 1 }, (_, i) => pendingRange.start + i)
+    } else {
+      // Right-click on a word outside any pending range — clear it and use just this word
+      setPendingRange(null)
+      window.getSelection()?.removeAllRanges()
+      targetIndices = [idx]
+    }
+
+    const hasAssocs = targetIndices.some(i => (assocMap.get(localWords[i].start)?.length ?? 0) > 0)
+    const sessionSuggestedWords = session.suggested_words
+      ? [...new Set((JSON.parse(session.suggested_words) as Array<{ word: string }>).map(s => s.word))]
+      : []
+
+    if (!hasAssocs && sessionSuggestedWords.length === 0) return
+
+    setPendingRange(null)
+    window.getSelection()?.removeAllRanges()
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      wordIndices: targetIndices,
+      hasAssocs,
+      phase: 'main',
+      suggestedWords: sessionSuggestedWords,
+    })
+  }
+
+  async function addAssociation(suggestedWord: string) {
+    if (!contextMenu) return
+    const indices = contextMenu.wordIndices
+    setContextMenu(null)
+
+    setAssocMap(prev => {
+      const next = new Map(prev)
+      for (const i of indices) {
+        const w = localWords[i]
+        next.set(w.start, [{
+          used_word: w.word.toLowerCase(),
+          suggested_word: suggestedWord,
+          session_id: session.id,
+          session_title: session.title,
+          session_started_at: session.started_at,
+          count: 1,
+          used_word_times: JSON.stringify([w.start]),
+        }])
+      }
+      return next
+    })
+
+    for (const i of indices) {
+      const w = localWords[i]
+      await fetch(`${API}/sessions/${session.id}/associations/manual`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suggested_word: suggestedWord, used_word: w.word.toLowerCase(), time_ms: w.start }),
+      }).catch(() => {})
+    }
+  }
+
+  async function deleteAssociation() {
+    if (!contextMenu) return
+    const indices = contextMenu.wordIndices
+    setContextMenu(null)
+
+    setAssocMap(prev => {
+      const next = new Map(prev)
+      for (const i of indices) next.delete(localWords[i].start)
+      return next
+    })
+
+    const entries = indices.map(i => ({ used_word: localWords[i].word.toLowerCase(), time_ms: localWords[i].start }))
+    await fetch(`${API}/sessions/${session.id}/associations/manual`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries }),
+    }).catch(() => {})
+  }
+
   // ── Word renderer ──────────────────────────────────────────────────────────
 
   function renderWord(word: string, idx: number) {
@@ -409,7 +534,21 @@ export function SessionViewer({ session, onTitleChange }: Props) {
         key={idx}
         data-word-idx={idx}
         className={classes}
-        onClick={() => { setEditingIdx(idx); setDraftWord(word) }}
+        onClick={() => {
+          if (pendingRange && idx >= pendingRange.start && idx <= pendingRange.end) {
+            window.getSelection()?.removeAllRanges()
+            setPendingRange(null)
+            setEditingIdx(null)
+            setEditingRange(pendingRange)
+            setRangeDraft(localWords.slice(pendingRange.start, pendingRange.end + 1).map(w => w.word).join(' '))
+          } else {
+            window.getSelection()?.removeAllRanges()
+            setPendingRange(null)
+            setEditingIdx(idx)
+            setDraftWord(word)
+          }
+        }}
+        onContextMenu={e => handleWordContextMenu(e, idx)}
         onMouseEnter={assocs?.length ? e => handleWordHover(e, assocs, localWords[idx].start) : undefined}
         onMouseLeave={assocs?.length ? () => setTooltip(null) : undefined}
       >
@@ -493,6 +632,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
           ref={transcriptRef}
           className="session-transcript session-transcript--lyrics"
           onMouseUp={handleTranscriptMouseUp}
+          onClick={e => { if (e.target === e.currentTarget) { setPendingRange(null) } }}
         >
           {lines.map((line, li) => {
             const visible = line.filter(
@@ -533,6 +673,44 @@ export function SessionViewer({ session, onTitleChange }: Props) {
           <div className="word-tooltip-time">
             {new Date(tooltip.wordStartMs).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
           </div>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onContextMenu={e => e.preventDefault()}
+        >
+          {contextMenu.phase === 'main' ? (
+            contextMenu.hasAssocs ? (
+              <button className="context-menu-item context-menu-item--danger" onClick={deleteAssociation}>
+                Remove association{contextMenu.wordIndices.length > 1 ? 's' : ''}
+              </button>
+            ) : (
+              <button
+                className="context-menu-item"
+                onClick={() => setContextMenu(prev => prev ? { ...prev, phase: 'pick' } : null)}
+              >
+                Associate with…
+              </button>
+            )
+          ) : (
+            <>
+              <button className="context-menu-back" onClick={() => setContextMenu(prev => prev ? { ...prev, phase: 'main' } : null)}>
+                ← Back
+              </button>
+              <div className="context-menu-label">Choose word prompt</div>
+              <div className="context-menu-words">
+                {contextMenu.suggestedWords.map(word => (
+                  <button key={word} className="context-menu-item" onClick={() => addAssociation(word)}>
+                    {word}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

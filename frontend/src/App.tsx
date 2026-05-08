@@ -13,6 +13,7 @@ export type StoredSession = {
   started_at: string
   ended_at: string
   transcript_words?: string  // JSON: Array<{word, start, end}> in ms
+  suggested_words?: string   // JSON: Array<{word, shownAt}>
   associations_status?: string  // 'pending' | 'done' | 'failed'
   audio_url?: string
 }

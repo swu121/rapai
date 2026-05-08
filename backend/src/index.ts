@@ -412,6 +412,73 @@ app.patch<{ Params: SessionParams; Body: { start: number; end: number; replaceme
   return { transcript: newTranscript, transcript_words: JSON.stringify(updated) }
 })
 
+app.post<{ Params: SessionParams; Body: { suggested_word: string; used_word: string; time_ms: number } }>(
+  '/sessions/:id/associations/manual',
+  async (request, reply) => {
+    const { id } = request.params
+    const { suggested_word, used_word, time_ms } = request.body
+    if (!suggested_word || !used_word || time_ms == null) {
+      return reply.code(400).send({ error: 'missing fields' })
+    }
+    const session = db.prepare('SELECT id FROM sessions WHERE id = ?').get(id)
+    if (!session) return reply.code(404).send({ error: 'not found' })
+
+    const existing = db.prepare(
+      'SELECT used_word_times FROM word_associations WHERE suggested_word = ? AND used_word = ? AND session_id = ?'
+    ).get(suggested_word.toLowerCase(), used_word.toLowerCase(), id) as
+      | { used_word_times: string | null }
+      | undefined
+
+    let times: number[]
+    if (existing) {
+      times = existing.used_word_times ? JSON.parse(existing.used_word_times) : []
+      if (!times.includes(time_ms)) times.push(time_ms)
+    } else {
+      times = [time_ms]
+    }
+
+    db.prepare(`
+      INSERT OR REPLACE INTO word_associations (suggested_word, used_word, session_id, count, used_word_times)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(suggested_word.toLowerCase(), used_word.toLowerCase(), id, times.length, JSON.stringify(times))
+
+    return { ok: true }
+  }
+)
+
+app.delete<{ Params: SessionParams; Body: { entries: Array<{ used_word: string; time_ms: number }> } }>(
+  '/sessions/:id/associations/manual',
+  async (request, reply) => {
+    const { id } = request.params
+    const { entries } = request.body
+    if (!entries?.length) return reply.code(400).send({ error: 'entries required' })
+    const session = db.prepare('SELECT id FROM sessions WHERE id = ?').get(id)
+    if (!session) return reply.code(404).send({ error: 'not found' })
+
+    db.transaction(() => {
+      for (const { used_word, time_ms } of entries) {
+        const rows = db.prepare(
+          'SELECT suggested_word, used_word_times FROM word_associations WHERE used_word = ? AND session_id = ?'
+        ).all(used_word.toLowerCase(), id) as Array<{ suggested_word: string; used_word_times: string | null }>
+
+        for (const row of rows) {
+          const times: number[] = row.used_word_times ? JSON.parse(row.used_word_times) : []
+          const newTimes = times.filter(t => t !== time_ms)
+          if (newTimes.length === 0) {
+            db.prepare('DELETE FROM word_associations WHERE suggested_word = ? AND used_word = ? AND session_id = ?')
+              .run(row.suggested_word, used_word.toLowerCase(), id)
+          } else {
+            db.prepare('UPDATE word_associations SET used_word_times = ?, count = ? WHERE suggested_word = ? AND used_word = ? AND session_id = ?')
+              .run(JSON.stringify(newTimes), newTimes.length, row.suggested_word, used_word.toLowerCase(), id)
+          }
+        }
+      }
+    })()
+
+    return { ok: true }
+  }
+)
+
 app.patch<{ Params: SessionParams; Body: { title: string } }>('/sessions/:id', async (request, reply) => {
   const { id } = request.params
   const { title } = request.body
