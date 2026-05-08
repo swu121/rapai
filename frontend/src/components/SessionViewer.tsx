@@ -59,6 +59,31 @@ function normalizeKey(word: string) {
   return word.toLowerCase().replace(/[^a-z']/g, '')
 }
 
+const ASSOC_BLACKLIST = new Set([
+  'i', 'me', 'my', 'mine', 'myself',
+  'we', 'us', 'our', 'ours', 'ourselves',
+  'you', 'your', 'yours', 'yourself', 'yourselves',
+  'he', 'him', 'his', 'himself',
+  'she', 'her', 'hers', 'herself',
+  'it', 'its', 'itself',
+  'they', 'them', 'their', 'theirs', 'themselves',
+  'a', 'an', 'the', 'this', 'that', 'these', 'those',
+  'and', 'but', 'or', 'nor', 'so', 'yet', 'for',
+  'in', 'on', 'at', 'by', 'to', 'of', 'up', 'as', 'is', 'be',
+  'do', 'did', 'does', 'done',
+  'have', 'has', 'had',
+  'was', 'were', 'are', 'am',
+  'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+  'not', 'no', 'yes', 'oh', 'ah',
+])
+
+function isAssocBlacklisted(word: string): boolean {
+  const lower = word.toLowerCase()
+  if (lower.includes("'")) return true
+  if (lower.length <= 1) return true
+  return ASSOC_BLACKLIST.has(lower)
+}
+
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString(undefined, {
     month: 'long',
@@ -137,6 +162,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
       .then((rows: Association[]) => {
         const map = new Map<string, Association[]>()
         for (const row of rows) {
+          if (isAssocBlacklisted(row.used_word)) continue
           const key = row.used_word.toLowerCase()
           if (!map.has(key)) map.set(key, [])
           map.get(key)!.push(row)
@@ -159,6 +185,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
             const rows: Association[] = await assocRes.json()
             const map = new Map<string, Association[]>()
             for (const row of rows) {
+              if (isAssocBlacklisted(row.used_word)) continue
               const key = row.used_word.toLowerCase()
               if (!map.has(key)) map.set(key, [])
               map.get(key)!.push(row)

@@ -9,6 +9,60 @@ import { join } from 'path'
 import { pipeline } from 'stream/promises'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
+import { dictionary as cmuDict } from 'cmu-pronouncing-dictionary'
+
+// --- Phoneme helpers ---
+
+function getPhonemes(word: string): string[] | null {
+  const entry = cmuDict[word.toLowerCase()]
+  return entry ? entry.split(' ') : null
+}
+
+function getRhymeTail(phonemes: string[]): string[] {
+  // Tail = last stressed vowel (ends in 1 or 2) through end of word
+  for (let i = phonemes.length - 1; i >= 0; i--) {
+    if (/[12]$/.test(phonemes[i])) return phonemes.slice(i)
+  }
+  return []
+}
+
+function stripStress(p: string): string {
+  return p.replace(/[012]$/, '')
+}
+
+const WORD_BLACKLIST = new Set([
+  'i', 'me', 'my', 'mine', 'myself',
+  'we', 'us', 'our', 'ours', 'ourselves',
+  'you', 'your', 'yours', 'yourself', 'yourselves',
+  'he', 'him', 'his', 'himself',
+  'she', 'her', 'hers', 'herself',
+  'it', 'its', 'itself',
+  'they', 'them', 'their', 'theirs', 'themselves',
+  'a', 'an', 'the', 'this', 'that', 'these', 'those',
+  'and', 'but', 'or', 'nor', 'so', 'yet', 'for',
+  'in', 'on', 'at', 'by', 'to', 'of', 'up', 'as', 'is', 'be',
+  'do', 'did', 'does', 'done',
+  'have', 'has', 'had',
+  'was', 'were', 'are', 'am',
+  'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+  'not', 'no', 'yes', 'oh', 'ah',
+])
+
+function isBlacklisted(word: string): boolean {
+  const lower = word.toLowerCase()
+  if (lower.includes("'")) return true
+  if (lower.length <= 1) return true
+  return WORD_BLACKLIST.has(lower)
+}
+
+type RhymeType = 'exact' | 'slant' | 'none'
+
+function getRhymeType(tailA: string[], tailB: string[]): RhymeType {
+  if (!tailA.length || !tailB.length) return 'none'
+  if (tailA.map(stripStress).join(' ') === tailB.map(stripStress).join(' ')) return 'exact'
+  if (stripStress(tailA[0]) === stripStress(tailB[0])) return 'slant'
+  return 'none'
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const UPLOADS_DIR = join(__dirname, '../../uploads')
@@ -77,6 +131,7 @@ async function runAssociationJob(
   suggestedWords: Array<{ word: string; shownAt: number }>
 ): Promise<void> {
   const log = (...args: unknown[]) => console.log(`[assoc:${sessionId.slice(0, 8)}]`, ...args)
+  const WINDOW_TAIL_MS = 3000 // extra ms after next word appears to still credit the previous prompt
 
   const setStatus = (status: 'done' | 'failed') =>
     db.prepare("UPDATE sessions SET associations_status = ? WHERE id = ?").run(status, sessionId)
@@ -94,25 +149,14 @@ async function runAssociationJob(
   const uniqueWords = [...new Set(suggestedWords.map(s => s.word))]
   log(`unique suggested words (${uniqueWords.length}):`, uniqueWords)
 
-  const rhymeMap = new Map<string, Set<string>>()
-
-  await Promise.all(uniqueWords.map(async (word) => {
-    const encoded = encodeURIComponent(word)
-    const [exactRes, nearRes] = await Promise.all([
-      fetch(`https://api.datamuse.com/words?rel_rhy=${encoded}&max=1000`),
-      fetch(`https://api.datamuse.com/words?rel_nry=${encoded}&max=1000`),
-    ])
-    const [exactResults, nearResults]: { word: string }[][] = await Promise.all([
-      exactRes.json(),
-      nearRes.json(),
-    ])
-    const combined = new Set([
-      ...exactResults.map(r => r.word.toLowerCase()),
-      ...nearResults.map(r => r.word.toLowerCase()),
-    ])
-    log(`rhymes fetched for "${word}": exact=${exactResults.length} near=${nearResults.length} combined=${combined.size}`)
-    rhymeMap.set(word, combined)
-  }))
+  // Look up CMU phonemes for each suggested word upfront
+  const tailMap = new Map<string, string[]>()
+  for (const word of uniqueWords) {
+    const phonemes = getPhonemes(word)
+    const tail = phonemes ? getRhymeTail(phonemes) : []
+    tailMap.set(word, tail)
+    log(`phonemes for "${word}": [${phonemes?.join(' ') ?? 'not in CMU dict'}] → tail: [${tail.join(' ')}]`)
+  }
 
   const sortedSuggested = [...suggestedWords].sort((a, b) => a.shownAt - b.shownAt)
   const sortedTranscript = [...transcriptWords].sort((a, b) => a.start - b.start)
@@ -141,23 +185,37 @@ async function runAssociationJob(
   for (let i = 0; i < sortedSuggested.length; i++) {
     const { word: suggestedWord, shownAt } = sortedSuggested[i]
     const nextShownAt = sortedSuggested[i + 1]?.shownAt ?? Infinity
+    const windowEnd = nextShownAt === Infinity ? Infinity : nextShownAt + WINDOW_TAIL_MS
 
-    const rhymeSet = rhymeMap.get(suggestedWord)
-    if (!rhymeSet) continue
+    const suggestedTail = tailMap.get(suggestedWord) ?? []
+    if (!suggestedTail.length) {
+      log(`"${suggestedWord}" — no CMU tail, skipping window`)
+      continue
+    }
 
-    const wordsInWindow = sortedTranscript.filter(tw => tw.start >= shownAt && tw.start < nextShownAt)
-    log(`"${suggestedWord}" window [${shownAt}–${nextShownAt === Infinity ? 'end' : nextShownAt}]: ${wordsInWindow.length} transcript words in range`)
+    const wordsInWindow = sortedTranscript.filter(tw => tw.start >= shownAt && tw.start < windowEnd)
+    log(`"${suggestedWord}" window [${shownAt}–${windowEnd === Infinity ? 'end' : `${nextShownAt}+3s`}]: ${wordsInWindow.length} transcript words in range`)
 
     const pairs: Array<[string, string]> = []
     for (const tw of wordsInWindow) {
       const w = tw.word.toLowerCase()
-      if (w.length <= 1) { log(`  skip "${tw.word}" — too short`); continue }
-      if (w === suggestedWord.toLowerCase()) { log(`  skip "${tw.word}" — same as prompt`); continue }
-      if (rhymeSet.has(w)) {
-        log(`  match "${tw.word}" rhymes with "${suggestedWord}"`)
+      if (isBlacklisted(w)) { log(`  skip  "${w}" — blacklisted`); continue }
+      if (w === suggestedWord.toLowerCase()) { log(`  skip  "${w}" — same as prompt`); continue }
+
+      const twPhonemes = getPhonemes(w)
+      if (!twPhonemes) { log(`  skip  "${w}" — not in CMU dict`); continue }
+
+      const twTail = getRhymeTail(twPhonemes)
+      const rhymeType = getRhymeType(suggestedTail, twTail)
+
+      if (rhymeType === 'exact') {
+        log(`  EXACT "${w}" [${twTail.join(' ')}] ✓ matches "${suggestedWord}" [${suggestedTail.join(' ')}]`)
+        pairs.push([suggestedWord.toLowerCase(), w])
+      } else if (rhymeType === 'slant') {
+        log(`  SLANT "${w}" [${twTail.join(' ')}] ✓ nucleus ${stripStress(twTail[0])} matches "${suggestedWord}" [${suggestedTail.join(' ')}]`)
         pairs.push([suggestedWord.toLowerCase(), w])
       } else {
-        log(`  no match "${tw.word}" — not in rhyme set`)
+        log(`  miss  "${w}" [${twTail.join(' ')}] — nucleus ${stripStress(twTail[0] ?? '')} ≠ ${stripStress(suggestedTail[0])}`)
       }
     }
     if (pairs.length) {
