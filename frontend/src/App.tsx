@@ -24,6 +24,7 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [suggestedWords, setSuggestedWords] = useState<Array<{ word: string; shownAt: number }>>([])
   const [rhymeSet, setRhymeSet] = useState<string[]>([])
+  const [isRecording, setIsRecording] = useState(false)
 
   async function fetchSessions() {
     const res = await fetch(`${API}/sessions`)
@@ -38,7 +39,10 @@ function App() {
   }
 
   function handleWordChange(word: string, shownAt: number) {
-    setSuggestedWords(prev => [...prev, { word, shownAt }])
+    setSuggestedWords(prev => {
+      if (prev.at(-1)?.word === word) return prev
+      return [...prev, { word, shownAt }]
+    })
     setRhymeSet([])
   }
 
@@ -73,8 +77,8 @@ function App() {
         ) : (
           <div className="app-columns">
             <HistoryRhymes rhymeSet={rhymeSet} />
-            <WordGenerator onWordChange={handleWordChange} onRhymesChange={setRhymeSet} />
-            <MicController onSessionSaved={handleSessionSaved} suggestedWords={suggestedWords} />
+            <WordGenerator onWordChange={handleWordChange} onRhymesChange={setRhymeSet} isRecording={isRecording} />
+            <MicController onSessionSaved={handleSessionSaved} suggestedWords={suggestedWords} onRecordingChange={setIsRecording} />
           </div>
         )}
       </main>

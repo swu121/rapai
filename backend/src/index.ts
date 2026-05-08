@@ -76,10 +76,15 @@ async function runAssociationJob(
   transcriptWords: Array<{ word: string; start: number; end: number }>,
   suggestedWords: Array<{ word: string; shownAt: number }>
 ): Promise<void> {
+  const log = (...args: unknown[]) => console.log(`[assoc:${sessionId.slice(0, 8)}]`, ...args)
+
   const setStatus = (status: 'done' | 'failed') =>
     db.prepare("UPDATE sessions SET associations_status = ? WHERE id = ?").run(status, sessionId)
 
+  log(`starting — transcriptWords=${transcriptWords.length} suggestedWords=${suggestedWords.length}`)
+
   if (!transcriptWords.length || !suggestedWords.length) {
+    log('skipping — empty input')
     setStatus('done')
     return
   }
@@ -87,6 +92,8 @@ async function runAssociationJob(
   try {
 
   const uniqueWords = [...new Set(suggestedWords.map(s => s.word))]
+  log(`unique suggested words (${uniqueWords.length}):`, uniqueWords)
+
   const rhymeMap = new Map<string, Set<string>>()
 
   await Promise.all(uniqueWords.map(async (word) => {
@@ -103,11 +110,19 @@ async function runAssociationJob(
       ...exactResults.map(r => r.word.toLowerCase()),
       ...nearResults.map(r => r.word.toLowerCase()),
     ])
+    log(`rhymes fetched for "${word}": exact=${exactResults.length} near=${nearResults.length} combined=${combined.size}`)
     rhymeMap.set(word, combined)
   }))
 
   const sortedSuggested = [...suggestedWords].sort((a, b) => a.shownAt - b.shownAt)
   const sortedTranscript = [...transcriptWords].sort((a, b) => a.start - b.start)
+
+  log(`transcript time range: ${sortedTranscript[0]?.start} → ${sortedTranscript.at(-1)?.end}`)
+  log(`suggested word windows:`, sortedSuggested.map((s, i) => ({
+    word: s.word,
+    from: s.shownAt,
+    to: sortedSuggested[i + 1]?.shownAt ?? 'end',
+  })))
 
   const upsert = db.prepare(`
     INSERT INTO word_associations (suggested_word, used_word, session_id, count)
@@ -121,6 +136,8 @@ async function runAssociationJob(
     }
   })
 
+  let totalPairs = 0
+
   for (let i = 0; i < sortedSuggested.length; i++) {
     const { word: suggestedWord, shownAt } = sortedSuggested[i]
     const nextShownAt = sortedSuggested[i + 1]?.shownAt ?? Infinity
@@ -128,19 +145,31 @@ async function runAssociationJob(
     const rhymeSet = rhymeMap.get(suggestedWord)
     if (!rhymeSet) continue
 
+    const wordsInWindow = sortedTranscript.filter(tw => tw.start >= shownAt && tw.start < nextShownAt)
+    log(`"${suggestedWord}" window [${shownAt}–${nextShownAt === Infinity ? 'end' : nextShownAt}]: ${wordsInWindow.length} transcript words in range`)
+
     const pairs: Array<[string, string]> = []
-    for (const tw of sortedTranscript) {
-      if (tw.start < shownAt || tw.start >= nextShownAt) continue
+    for (const tw of wordsInWindow) {
       const w = tw.word.toLowerCase()
-      if (w.length <= 1) continue
-      if (w === suggestedWord.toLowerCase()) continue
-      if (rhymeSet.has(w)) pairs.push([suggestedWord.toLowerCase(), w])
+      if (w.length <= 1) { log(`  skip "${tw.word}" — too short`); continue }
+      if (w === suggestedWord.toLowerCase()) { log(`  skip "${tw.word}" — same as prompt`); continue }
+      if (rhymeSet.has(w)) {
+        log(`  match "${tw.word}" rhymes with "${suggestedWord}"`)
+        pairs.push([suggestedWord.toLowerCase(), w])
+      } else {
+        log(`  no match "${tw.word}" — not in rhyme set`)
+      }
     }
-    if (pairs.length) upsertBatch(pairs)
+    if (pairs.length) {
+      upsertBatch(pairs)
+      totalPairs += pairs.length
+    }
   }
 
+  log(`done — ${totalPairs} association pairs saved`)
   setStatus('done')
   } catch (err) {
+    log('failed:', err)
     setStatus('failed')
     throw err
   }
@@ -374,8 +403,9 @@ app.get<{ Params: { id: string } }>('/sessions/:id/associations', async (request
     FROM word_associations wa
     JOIN sessions s ON s.id = wa.session_id
     WHERE wa.used_word IN (${placeholders})
+      AND wa.session_id = ?
     ORDER BY wa.count DESC
-  `).all(...unique)
+  `).all(...unique, request.params.id)
 
   return rows
 })

@@ -15,11 +15,12 @@ type TranscriptResult = {
 type Props = {
   onSessionSaved: () => void
   suggestedWords: Array<{ word: string; shownAt: number }>
+  onRecordingChange?: (isRecording: boolean) => void
 }
 
 const API = 'http://localhost:3001'
 
-export function MicController({ onSessionSaved, suggestedWords }: Props) {
+export function MicController({ onSessionSaved, suggestedWords, onRecordingChange }: Props) {
   const [micState, setMicState] = useState<MicState>("idle");
   const [finalTranscript, setFinalTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
@@ -165,6 +166,7 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
       await enumerateDevices();
       await startAudioPipeline(stream);
       setMicState("granted");
+      onRecordingChange?.(true);
     } catch (err) {
       console.error("MicController error:", err);
       if (err instanceof DOMException && err.name === "NotAllowedError") {
@@ -207,9 +209,12 @@ export function MicController({ onSessionSaved, suggestedWords }: Props) {
     setInterimTranscript("");
     setFinalTranscript("");
     setMicState("idle");
+    onRecordingChange?.(false);
 
     if (transcript && startedAtRef.current) {
       try {
+        console.log('[session] transcript words:', transcriptWordsRef.current.length, transcriptWordsRef.current)
+        console.log('[session] suggested words to send:', suggestedWords.length, suggestedWords)
         const res = await fetch(`${API}/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
