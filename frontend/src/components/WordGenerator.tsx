@@ -29,10 +29,20 @@ export function WordGenerator({
   const [visible, setVisible] = useState(true);
   const [isFetching, setIsFetching] = useState(false);
   const [rhymes, setRhymes] = useState<string[]>([]);
+
   const currentWordRef = useRef(currentWord);
   currentWordRef.current = currentWord;
 
+  // Refs keep timer callback current without restarting the interval
+  const secondsLeftRef = useRef(intervalSecs);
+  const intervalSecsRef = useRef(intervalSecs);
+  intervalSecsRef.current = intervalSecs;
+
+  // Bug 1 fix: only notify parent when actually recording.
+  // Adding isRecording to deps also fires this when recording starts,
+  // so the word visible at that moment gets tracked.
   useEffect(() => {
+    if (!isRecording) return;
     onWordChange?.(currentWord, Date.now());
     let cancelled = false;
     setIsFetching(true);
@@ -47,23 +57,31 @@ export function WordGenerator({
     return () => {
       cancelled = true;
     };
-  }, [currentWord]);
+  }, [currentWord, isRecording]);
+
+  // Bug 2 fix: use refs for countdown logic so advanceWord is called exactly
+  // once per tick and never inside a React state updater function.
+  useEffect(() => {
+    if (isRecording) {
+      secondsLeftRef.current = intervalSecsRef.current;
+      setSecondsLeft(intervalSecsRef.current);
+    }
+  }, [isRecording]);
 
   useEffect(() => {
-    if (!isRunning) return;
+    if (!isRunning || !isRecording) return;
 
     const tick = setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          advanceWord();
-          return intervalSecs;
-        }
-        return prev - 1;
-      });
+      secondsLeftRef.current -= 1;
+      if (secondsLeftRef.current <= 0) {
+        secondsLeftRef.current = intervalSecsRef.current;
+        advanceWord();
+      }
+      setSecondsLeft(secondsLeftRef.current);
     }, 1000);
 
     return () => clearInterval(tick);
-  }, [isRunning, intervalSecs]);
+  }, [isRunning, isRecording]);
 
   function advanceWord() {
     setVisible(false);
@@ -75,17 +93,20 @@ export function WordGenerator({
 
   function handleToggle() {
     if (!isRunning) {
+      secondsLeftRef.current = intervalSecs;
       setSecondsLeft(intervalSecs);
     }
     setIsRunning((r) => !r);
   }
 
   function handleSkip() {
+    secondsLeftRef.current = intervalSecs;
     setSecondsLeft(intervalSecs);
     advanceWord();
   }
 
   function handleIntervalChange(secs: number) {
+    secondsLeftRef.current = secs;
     setIntervalSecs(secs);
     setSecondsLeft(secs);
   }

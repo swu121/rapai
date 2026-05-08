@@ -46,6 +46,24 @@ const WORD_BLACKLIST = new Set([
   'was', 'were', 'are', 'am',
   'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
   'not', 'no', 'yes', 'oh', 'ah',
+  // swear words
+  'fuck', 'fucking', 'fucked', 'fucker', 'fucks',
+  'shit', 'shitting', 'shitted', 'shits',
+  'bitch', 'bitches', 'bitching',
+  'ass', 'asses', 'asshole', 'assholes',
+  'damn', 'damned', 'dammit',
+  'hell', 'hella',
+  'crap', 'crappy',
+  'bastard', 'bastards',
+  'dick', 'dicks',
+  'cock', 'cocks',
+  'pussy', 'pussies',
+  'nigga', 'niggas', 'nigger', 'niggers',
+  'hoe', 'hoes',
+  'whore', 'whores',
+  'slut', 'sluts',
+  'piss', 'pissed',
+  'cunt', 'cunts',
 ])
 
 function isBlacklisted(word: string): boolean {
@@ -108,6 +126,10 @@ db.exec(`
   )
 `)
 
+try {
+  db.exec('ALTER TABLE word_associations ADD COLUMN used_word_times TEXT')
+} catch { /* column already exists */ }
+
 interface PostSessionBody {
   transcript: string
   started_at: string
@@ -168,19 +190,8 @@ async function runAssociationJob(
     to: sortedSuggested[i + 1]?.shownAt ?? 'end',
   })))
 
-  const upsert = db.prepare(`
-    INSERT INTO word_associations (suggested_word, used_word, session_id, count)
-    VALUES (?, ?, ?, 1)
-    ON CONFLICT(suggested_word, used_word, session_id) DO UPDATE SET count = count + 1
-  `)
-
-  const upsertBatch = db.transaction((pairs: Array<[string, string]>) => {
-    for (const [suggested, used] of pairs) {
-      upsert.run(suggested, used, sessionId)
-    }
-  })
-
-  let totalPairs = 0
+  // Collect all matches across windows: key = "suggested|used", value = set of start_ms timestamps
+  const aggMap = new Map<string, Set<number>>()
 
   for (let i = 0; i < sortedSuggested.length; i++) {
     const { word: suggestedWord, shownAt } = sortedSuggested[i]
@@ -196,7 +207,6 @@ async function runAssociationJob(
     const wordsInWindow = sortedTranscript.filter(tw => tw.start >= shownAt && tw.start < windowEnd)
     log(`"${suggestedWord}" window [${shownAt}–${windowEnd === Infinity ? 'end' : `${nextShownAt}+3s`}]: ${wordsInWindow.length} transcript words in range`)
 
-    const pairs: Array<[string, string]> = []
     for (const tw of wordsInWindow) {
       const w = tw.word.toLowerCase()
       if (isBlacklisted(w)) { log(`  skip  "${w}" — blacklisted`); continue }
@@ -210,21 +220,34 @@ async function runAssociationJob(
 
       if (rhymeType === 'exact') {
         log(`  EXACT "${w}" [${twTail.join(' ')}] ✓ matches "${suggestedWord}" [${suggestedTail.join(' ')}]`)
-        pairs.push([suggestedWord.toLowerCase(), w])
       } else if (rhymeType === 'slant') {
         log(`  SLANT "${w}" [${twTail.join(' ')}] ✓ nucleus ${stripStress(twTail[0])} matches "${suggestedWord}" [${suggestedTail.join(' ')}]`)
-        pairs.push([suggestedWord.toLowerCase(), w])
       } else {
         log(`  miss  "${w}" [${twTail.join(' ')}] — nucleus ${stripStress(twTail[0] ?? '')} ≠ ${stripStress(suggestedTail[0])}`)
+        continue
       }
-    }
-    if (pairs.length) {
-      upsertBatch(pairs)
-      totalPairs += pairs.length
+
+      const key = `${suggestedWord.toLowerCase()}|${w}`
+      if (!aggMap.has(key)) aggMap.set(key, new Set())
+      aggMap.get(key)!.add(tw.start)
     }
   }
 
-  log(`done — ${totalPairs} association pairs saved`)
+  const insert = db.prepare(`
+    INSERT OR REPLACE INTO word_associations (suggested_word, used_word, session_id, count, used_word_times)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  const insertAll = db.transaction(() => {
+    for (const [key, times] of aggMap) {
+      const bar = key.indexOf('|')
+      const suggested = key.slice(0, bar)
+      const used = key.slice(bar + 1)
+      insert.run(suggested, used, sessionId, times.size, JSON.stringify([...times]))
+    }
+  })
+  insertAll()
+
+  log(`done — ${aggMap.size} association pairs saved`)
   setStatus('done')
   } catch (err) {
     log('failed:', err)
@@ -456,6 +479,7 @@ app.get<{ Params: { id: string } }>('/sessions/:id/associations', async (request
       wa.suggested_word,
       wa.session_id,
       wa.count,
+      wa.used_word_times,
       s.title        AS session_title,
       s.started_at   AS session_started_at
     FROM word_associations wa

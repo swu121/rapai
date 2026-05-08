@@ -12,10 +12,12 @@ type Association = {
   session_title: string
   session_started_at: string
   count: number
+  used_word_times: string | null
 }
 
 type TooltipState = {
   assocs: Association[]
+  wordStartMs: number
   x: number
   y: number
   below: boolean
@@ -55,9 +57,6 @@ function detectLines(words: TimedWord[], threshold: number): number[][] {
   return lines
 }
 
-function normalizeKey(word: string) {
-  return word.toLowerCase().replace(/[^a-z']/g, '')
-}
 
 const ASSOC_BLACKLIST = new Set([
   'i', 'me', 'my', 'mine', 'myself',
@@ -75,6 +74,24 @@ const ASSOC_BLACKLIST = new Set([
   'was', 'were', 'are', 'am',
   'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
   'not', 'no', 'yes', 'oh', 'ah',
+  // swear words
+  'fuck', 'fucking', 'fucked', 'fucker', 'fucks',
+  'shit', 'shitting', 'shitted', 'shits',
+  'bitch', 'bitches', 'bitching',
+  'ass', 'asses', 'asshole', 'assholes',
+  'damn', 'damned', 'dammit',
+  'hell', 'hella',
+  'crap', 'crappy',
+  'bastard', 'bastards',
+  'dick', 'dicks',
+  'cock', 'cocks',
+  'pussy', 'pussies',
+  'nigga', 'niggas', 'nigger', 'niggers',
+  'hoe', 'hoes',
+  'whore', 'whores',
+  'slut', 'sluts',
+  'piss', 'pissed',
+  'cunt', 'cunts',
 ])
 
 function isAssocBlacklisted(word: string): boolean {
@@ -93,13 +110,6 @@ function formatDate(iso: string) {
   })
 }
 
-function formatShortDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
 
 function duration(start: string, end: string) {
   const secs = Math.round((new Date(end).getTime() - new Date(start).getTime()) / 1000)
@@ -125,7 +135,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
   const rangeEscapeRef = useRef(false)
   const transcriptRef = useRef<HTMLDivElement>(null)
 
-  const [assocMap, setAssocMap] = useState<Map<string, Association[]>>(new Map())
+  const [assocMap, setAssocMap] = useState<Map<number, Association[]>>(new Map())
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
   const [isProcessing, setIsProcessing] = useState(session.associations_status === 'pending')
 
@@ -160,12 +170,15 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     fetch(`${API}/sessions/${session.id}/associations`)
       .then(r => r.json())
       .then((rows: Association[]) => {
-        const map = new Map<string, Association[]>()
+        const map = new Map<number, Association[]>()
         for (const row of rows) {
           if (isAssocBlacklisted(row.used_word)) continue
-          const key = row.used_word.toLowerCase()
-          if (!map.has(key)) map.set(key, [])
-          map.get(key)!.push(row)
+          if (!row.used_word_times) continue
+          const times: number[] = JSON.parse(row.used_word_times)
+          for (const t of times) {
+            if (!map.has(t)) map.set(t, [])
+            map.get(t)!.push(row)
+          }
         }
         setAssocMap(map)
       })
@@ -183,12 +196,15 @@ export function SessionViewer({ session, onTitleChange }: Props) {
           if (data.associations_status === 'done') {
             const assocRes = await fetch(`${API}/sessions/${session.id}/associations`)
             const rows: Association[] = await assocRes.json()
-            const map = new Map<string, Association[]>()
+            const map = new Map<number, Association[]>()
             for (const row of rows) {
               if (isAssocBlacklisted(row.used_word)) continue
-              const key = row.used_word.toLowerCase()
-              if (!map.has(key)) map.set(key, [])
-              map.get(key)!.push(row)
+              if (!row.used_word_times) continue
+              const times: number[] = JSON.parse(row.used_word_times)
+              for (const t of times) {
+                if (!map.has(t)) map.set(t, [])
+                map.get(t)!.push(row)
+              }
             }
             setAssocMap(map)
           }
@@ -238,12 +254,10 @@ export function SessionViewer({ session, onTitleChange }: Props) {
       // Delete the word
       const prevWords = localWords
       const prevAssocMap = assocMap
-      const deletedKey = normalizeKey(original)
+      const deletedTime = localWords[idx].start
 
       setLocalWords(prev => prev.filter((_, i) => i !== idx))
-      if (assocMap.has(deletedKey)) {
-        setAssocMap(prev => { const next = new Map(prev); next.delete(deletedKey); return next })
-      }
+      setAssocMap(prev => { const next = new Map(prev); next.delete(deletedTime); return next })
 
       await fetch(`${API}/sessions/${session.id}/words/${idx}`, { method: 'DELETE' })
         .catch(() => { setLocalWords(prevWords); setAssocMap(prevAssocMap) })
@@ -253,22 +267,8 @@ export function SessionViewer({ session, onTitleChange }: Props) {
     if (trimmed.toLowerCase() === original.toLowerCase()) return
 
     const prevWords = localWords
-    const prevAssocMap = assocMap
 
     setLocalWords(prev => prev.map((w, i) => i === idx ? { ...w, word: trimmed } : w))
-
-    const oldKey = normalizeKey(original)
-    const newKey = normalizeKey(trimmed)
-    if (oldKey !== newKey && assocMap.has(oldKey)) {
-      setAssocMap(prev => {
-        const next = new Map(prev)
-        const moved = next.get(oldKey)!
-        next.delete(oldKey)
-        const existing = next.get(newKey) ?? []
-        next.set(newKey, [...existing, ...moved])
-        return next
-      })
-    }
 
     await fetch(`${API}/sessions/${session.id}/words/${idx}`, {
       method: 'PATCH',
@@ -276,7 +276,6 @@ export function SessionViewer({ session, onTitleChange }: Props) {
       body: JSON.stringify({ word: trimmed }),
     }).catch(() => {
       setLocalWords(prevWords)
-      setAssocMap(prevAssocMap)
     })
   }
 
@@ -322,7 +321,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
 
     const prevWords = localWords
     const prevAssocMap = assocMap
-    const replacedKeys = localWords.slice(start, end + 1).map(w => normalizeKey(w.word)).filter(Boolean)
+    const replacedTimes = localWords.slice(start, end + 1).map(w => w.start)
 
     if (!trimmed) {
       setLocalWords(prev => prev.filter((_, i) => i < start || i > end))
@@ -341,7 +340,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
 
     setAssocMap(prev => {
       const next = new Map(prev)
-      for (const k of replacedKeys) next.delete(k)
+      for (const t of replacedTimes) next.delete(t)
       return next
     })
 
@@ -362,10 +361,10 @@ export function SessionViewer({ session, onTitleChange }: Props) {
 
   // ── Tooltip ────────────────────────────────────────────────────────────────
 
-  function handleWordHover(e: React.MouseEvent, assocs: Association[]) {
+  function handleWordHover(e: React.MouseEvent, assocs: Association[], wordStartMs: number) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
     const below = rect.top < 120
-    setTooltip({ assocs, x: rect.left, y: below ? rect.bottom : rect.top, below })
+    setTooltip({ assocs, wordStartMs, x: rect.left, y: below ? rect.bottom : rect.top, below })
   }
 
   // ── Word renderer ──────────────────────────────────────────────────────────
@@ -399,8 +398,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
       )
     }
 
-    const key = normalizeKey(word)
-    const assocs = assocMap.get(key)
+    const assocs = assocMap.get(localWords[idx].start)
     const classes = [
       'transcript-word--editable',
       assocs?.length ? 'transcript-word--associated' : '',
@@ -412,7 +410,7 @@ export function SessionViewer({ session, onTitleChange }: Props) {
         data-word-idx={idx}
         className={classes}
         onClick={() => { setEditingIdx(idx); setDraftWord(word) }}
-        onMouseEnter={assocs?.length ? e => handleWordHover(e, assocs) : undefined}
+        onMouseEnter={assocs?.length ? e => handleWordHover(e, assocs, localWords[idx].start) : undefined}
         onMouseLeave={assocs?.length ? () => setTooltip(null) : undefined}
       >
         {word}
@@ -514,21 +512,9 @@ export function SessionViewer({ session, onTitleChange }: Props) {
         </div>
       ) : (
         <div className="session-transcript">
-          {session.transcript.trim().split(/(\s+)/).map((token, i) => {
-            if (/^\s+$/.test(token)) return token
-            const assocs = assocMap.get(normalizeKey(token))
-            if (!assocs?.length) return <span key={i}>{token}</span>
-            return (
-              <span
-                key={i}
-                className="transcript-word--associated"
-                onMouseEnter={e => handleWordHover(e, assocs)}
-                onMouseLeave={() => setTooltip(null)}
-              >
-                {token}
-              </span>
-            )
-          })}
+          {session.transcript.trim().split(/(\s+)/).map((token, i) => (
+            /^\s+$/.test(token) ? token : <span key={i}>{token}</span>
+          ))}
         </div>
       )}
 
@@ -542,10 +528,11 @@ export function SessionViewer({ session, onTitleChange }: Props) {
               <div className="word-tooltip-suggestion">
                 Suggested: <strong>{a.suggested_word}</strong>
               </div>
-              <div className="word-tooltip-session">{a.session_title}</div>
-              <div className="word-tooltip-date">{formatShortDate(a.session_started_at)}</div>
             </div>
           ))}
+          <div className="word-tooltip-time">
+            {new Date(tooltip.wordStartMs).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
+          </div>
         </div>
       )}
     </div>

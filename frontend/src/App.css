@@ -268,28 +268,20 @@
 }
 
 .word-tooltip-suggestion {
-  font-size: 0.85rem;
+  font-size: 1rem;
   color: var(--text-h);
 }
 
 .word-tooltip-suggestion strong {
+  font-size: 1.1rem;
   color: var(--accent);
 }
 
-.word-tooltip-session {
-  font-size: 0.8rem;
-  color: var(--text);
-  margin-top: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.word-tooltip-date {
+.word-tooltip-time {
   font-size: 0.75rem;
   color: var(--text);
-  margin-top: 2px;
-  opacity: 0.7;
+  margin-top: 6px;
+  opacity: 0.6;
 }
 
 /* ── Associations processing indicator ── */

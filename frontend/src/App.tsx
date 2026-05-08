@@ -40,7 +40,11 @@ function App() {
 
   function handleWordChange(word: string, shownAt: number) {
     setSuggestedWords(prev => {
-      if (prev.at(-1)?.word === word) return prev
+      if (prev.at(-1)?.word === word) {
+        console.log('[suggestedWords] skip duplicate:', word)
+        return prev
+      }
+      console.log('[suggestedWords] adding:', word, '| total:', prev.length + 1)
       return [...prev, { word, shownAt }]
     })
     setRhymeSet([])
